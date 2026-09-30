@@ -1,0 +1,102 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configure Heating System",
+        "description": "Welcome to Zoned Heating Thermostat setup wizard. Enter your heating system name.",
+        "data": {
+          "system_name": "System Name"
+        }
+      },
+      "zones": {
+        "title": "Create Zones",
+        "description": "Define zones separated by commas (e.g. 'Ground Floor, First Floor'). Each zone will manage an independent pump.",
+        "data": {
+          "zones": "Zones"
+        }
+      },
+      "zone_rooms": {
+        "title": "Rooms for {zone_name}",
+        "description": "Enter room names belonging to {zone_name} separated by commas (e.g. 'Living Room, Kitchen, Office').",
+        "data": {
+          "rooms": "Rooms"
+        }
+      },
+      "configure_room": {
+        "title": "Sensors for {room_name} ({zone_name})",
+        "description": "Select the primary room temperature sensor, associated TRVs and optional window sensor.",
+        "data": {
+          "temp_sensor": "Room Temperature Sensor",
+          "trvs": "Thermostatic Radiator Valves (TRVs)",
+          "window_sensor": "Window Sensor (optional)"
+        }
+      },
+      "pumps": {
+        "title": "Assign Circulation Pumps",
+        "description": "Select the switch/relay for each zone's circulation pump.",
+        "data": {
+          "pump_ground_floor": "Ground Floor Pump",
+          "pump_first_floor": "First Floor Pump"
+        }
+      },
+      "summary": {
+        "title": "Configuration Summary",
+        "description": "Setup successfully completed!\n\n{summary}\n\nPress SUBMIT to activate smart zoned heating control."
+      }
+    },
+    "error": {
+      "no_zones_defined": "You must specify at least one zone.",
+      "no_rooms_defined": "You must specify at least one room for this zone."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Advanced Heating Parameters",
+        "data": {
+          "default_hysteresis": "Thermal Hysteresis (°C)",
+          "min_pump_on_time": "Minimum Pump ON Time (seconds)",
+          "min_pump_off_time": "Minimum Pump OFF Time (seconds)",
+          "startup_delay": "Pump Startup Delay (seconds, waits for TRV to open)",
+          "shutdown_delay": "Pump Shutdown Delay (seconds, post-circulation)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "system_heat_demand": {
+        "name": "Total Heat Demand"
+      },
+      "zone_heat_demand": {
+        "name": "Zone Heat Demand"
+      },
+      "room_heat_demand": {
+        "name": "Room Heat Demand"
+      }
+    },
+    "sensor": {
+      "system_mode": {
+        "name": "System Mode"
+      },
+      "active_zones_count": {
+        "name": "Active Zones"
+      },
+      "zone_status": {
+        "name": "Zone Status"
+      },
+      "pump_status": {
+        "name": "Pump Status"
+      },
+      "room_status": {
+        "name": "Room Status"
+      },
+      "current_temperature": {
+        "name": "Current Temperature"
+      },
+      "target_temperature": {
+        "name": "Target Temperature"
+      }
+    }
+  }
+}

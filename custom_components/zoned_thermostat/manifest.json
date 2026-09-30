@@ -1,0 +1,11 @@
+{
+  "domain": "zoned_thermostat",
+  "name": "Zoned Heating Thermostat",
+  "version": "1.0.0",
+  "config_flow": true,
+  "documentation": "https://github.com/alp4ca/zoned_thermostat",
+  "issue_tracker": "https://github.com/alp4ca/zoned_thermostat/issues",
+  "codeowners": ["@alp4ca"],
+  "iot_class": "local_push",
+  "integration_type": "hub"
+}

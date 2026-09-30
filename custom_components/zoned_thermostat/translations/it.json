@@ -1,0 +1,102 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configura il tuo Impianto",
+        "description": "Benvenuto nella configurazione guidata di Zoned Heating Thermostat. Inserisci il nome del tuo impianto.",
+        "data": {
+          "system_name": "Nome Impianto"
+        }
+      },
+      "zones": {
+        "title": "Crea le Zone",
+        "description": "Definisci le zone del tuo impianto separate da virgola (es. 'Piano Terra, Piano Primo'). Ogni zona controllerà una pompa indipendente.",
+        "data": {
+          "zones": "Zone dell'impianto"
+        }
+      },
+      "zone_rooms": {
+        "title": "Stanze per {zone_name}",
+        "description": "Inserisci le stanze appartenenti a {zone_name} separate da virgola (es. 'Sala, Cucina, Bunker').",
+        "data": {
+          "rooms": "Stanze della zona"
+        }
+      },
+      "configure_room": {
+        "title": "Sensori per {room_name} ({zone_name})",
+        "description": "Seleziona il sensore di temperatura ambiente primario, le valvole termostatiche (TRV) associate ed eventuale sensore finestra.",
+        "data": {
+          "temp_sensor": "Sensore Temperatura Ambiente",
+          "trvs": "Valvole Termostatiche (TRV)",
+          "window_sensor": "Sensore Finestra (opzionale)"
+        }
+      },
+      "pumps": {
+        "title": "Associa le Pompe di Circolazione",
+        "description": "Seleziona l'interruttore/relè switch per la pompa di circolazione di ciascuna zona.",
+        "data": {
+          "pump_piano_terra": "Pompa Piano Terra",
+          "pump_piano_primo": "Pompa Piano Primo"
+        }
+      },
+      "summary": {
+        "title": "Riepilogo Impianto",
+        "description": "Configurazione completata con successo!\n\n{summary}\n\nPremi INVIA per avviare il controllo intelligente del riscaldamento."
+      }
+    },
+    "error": {
+      "no_zones_defined": "Devi inserire almeno una zona.",
+      "no_rooms_defined": "Devi inserire almeno una stanza per questa zona."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Parametri Avanzati di Riscaldamento",
+        "data": {
+          "default_hysteresis": "Isteresi Termica (°C)",
+          "min_pump_on_time": "Tempo Minimo Pompa Accesa (secondi)",
+          "min_pump_off_time": "Tempo Minimo Pompa Spenta (secondi)",
+          "startup_delay": "Ritardo Avvio Pompa (secondi, attesa apertura TRV)",
+          "shutdown_delay": "Ritardo Spegnimento Pompa (secondi, post-circolazione)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "system_heat_demand": {
+        "name": "Richiesta Calore Totale"
+      },
+      "zone_heat_demand": {
+        "name": "Richiesta Calore Zona"
+      },
+      "room_heat_demand": {
+        "name": "Richiesta Calore Stanza"
+      }
+    },
+    "sensor": {
+      "system_mode": {
+        "name": "Modalità Sistema"
+      },
+      "active_zones_count": {
+        "name": "Zone Attive"
+      },
+      "zone_status": {
+        "name": "Stato Zona"
+      },
+      "pump_status": {
+        "name": "Stato Pompa"
+      },
+      "room_status": {
+        "name": "Stato Stanza"
+      },
+      "current_temperature": {
+        "name": "Temperatura Attuale"
+      },
+      "target_temperature": {
+        "name": "Temperatura Target"
+      }
+    }
+  }
+}
