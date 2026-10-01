@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..const import (
     DEFAULT_BUFFER_MIN_TEMP,
+    DEFAULT_BUFFER_OVERHEAT_HYSTERESIS,
+    DEFAULT_BUFFER_OVERHEAT_TEMP,
     DEFAULT_BUFFER_TEMP_HYSTERESIS,
     DEFAULT_PRESETS,
 )
@@ -28,6 +30,8 @@ class HeatingSystem:
         buffer_temp_sensor: Optional[str] = None,
         buffer_min_temp: float = DEFAULT_BUFFER_MIN_TEMP,
         buffer_temp_hysteresis: float = DEFAULT_BUFFER_TEMP_HYSTERESIS,
+        buffer_overheat_temp: float = DEFAULT_BUFFER_OVERHEAT_TEMP,
+        buffer_overheat_hysteresis: float = DEFAULT_BUFFER_OVERHEAT_HYSTERESIS,
         event_log_size: int = 100,
     ) -> None:
         """Initialize the heating system."""
@@ -38,12 +42,15 @@ class HeatingSystem:
         self.zones: Dict[str, HeatingZone] = {}
         self.event_log = EventLogBuffer(max_size=event_log_size)
 
-        # Buffer Tank / Puffer Interlock
+        # Buffer Tank / Puffer Interlock & Overheat Safety
         self.buffer_temp_sensor = buffer_temp_sensor
         self.buffer_min_temp = float(buffer_min_temp)
         self.buffer_temp_hysteresis = float(buffer_temp_hysteresis)
+        self.buffer_overheat_temp = float(buffer_overheat_temp)
+        self.buffer_overheat_hysteresis = float(buffer_overheat_hysteresis)
         self.buffer_current_temp: Optional[float] = None
         self.is_buffer_ready: bool = True if not buffer_temp_sensor else False
+        self.is_buffer_overheat: bool = False
 
     def add_zone(self, zone: HeatingZone) -> None:
         """Add a heating zone to the system."""
@@ -116,37 +123,47 @@ class HeatingSystem:
         sensor_id: Optional[str],
         min_temp: float = DEFAULT_BUFFER_MIN_TEMP,
         hysteresis: float = DEFAULT_BUFFER_TEMP_HYSTERESIS,
+        overheat_temp: float = DEFAULT_BUFFER_OVERHEAT_TEMP,
+        overheat_hysteresis: float = DEFAULT_BUFFER_OVERHEAT_HYSTERESIS,
     ) -> None:
-        """Configure buffer tank / puffer temperature interlock."""
+        """Configure buffer tank / puffer temperature interlock and overheat protection."""
         self.buffer_temp_sensor = sensor_id
         self.buffer_min_temp = float(min_temp)
         self.buffer_temp_hysteresis = float(hysteresis)
+        self.buffer_overheat_temp = float(overheat_temp)
+        self.buffer_overheat_hysteresis = float(overheat_hysteresis)
         if not sensor_id:
             self.is_buffer_ready = True
+            self.is_buffer_overheat = False
             self.buffer_current_temp = None
         else:
             if self.buffer_current_temp is not None:
                 self.update_buffer_temperature(self.buffer_current_temp)
             else:
                 self.is_buffer_ready = False
+                self.is_buffer_overheat = False
 
     def update_buffer_temperature(self, temp: Optional[float]) -> bool:
-        """Update buffer storage temperature reading and evaluate availability.
+        """Update buffer storage temperature reading and evaluate availability & overheat.
 
         Asymmetric hysteresis:
-        - If not ready: becomes ready only when temp >= buffer_min_temp.
-        - If ready: turns off only if temp drops below (buffer_min_temp - buffer_temp_hysteresis).
+        - Readiness: becomes ready when temp >= min_temp; turns off when temp < min_temp - hysteresis.
+        - Overheat: activates when temp >= overheat_temp; releases when temp < overheat_temp - overheat_hysteresis.
 
-        Returns True if readiness changed.
+        Returns True if readiness or overheat state changed.
         """
         self.buffer_current_temp = temp
         if not self.buffer_temp_sensor:
             self.is_buffer_ready = True
+            self.is_buffer_overheat = False
             return False
 
         was_ready = self.is_buffer_ready
+        was_overheat = self.is_buffer_overheat
+
         if temp is None:
             self.is_buffer_ready = False
+            self.is_buffer_overheat = False
             if was_ready:
                 self.event_log.record(
                     entity_type="system",
@@ -155,8 +172,9 @@ class HeatingSystem:
                     event_type="buffer_unavailable",
                     message="Sensore accumulo termico non disponibile: pompe inibite per sicurezza",
                 )
-            return was_ready != self.is_buffer_ready
+            return was_ready != self.is_buffer_ready or was_overheat != self.is_buffer_overheat
 
+        # 1. Evaluate Readiness
         if not self.is_buffer_ready:
             if temp >= self.buffer_min_temp:
                 self.is_buffer_ready = True
@@ -181,7 +199,32 @@ class HeatingSystem:
                     metadata={"temp": temp, "cutoff": cutoff},
                 )
 
-        return was_ready != self.is_buffer_ready
+        # 2. Evaluate Overheat Safety Dissipation
+        if not self.is_buffer_overheat:
+            if temp >= self.buffer_overheat_temp:
+                self.is_buffer_overheat = True
+                self.event_log.record(
+                    entity_type="system",
+                    entity_id=self.system_id,
+                    entity_name=self.name,
+                    event_type="buffer_overheat_activated",
+                    message=f"EMERGENZA SOVRATEMPERATURA ACCUMULO ({temp}°C >= {self.buffer_overheat_temp}°C): Attivata dissipazione forzata (pompe ON, valvole aperte al 100%)",
+                    metadata={"temp": temp, "overheat_temp": self.buffer_overheat_temp},
+                )
+        else:
+            release_cutoff = self.buffer_overheat_temp - self.buffer_overheat_hysteresis
+            if temp < release_cutoff:
+                self.is_buffer_overheat = False
+                self.event_log.record(
+                    entity_type="system",
+                    entity_id=self.system_id,
+                    entity_name=self.name,
+                    event_type="buffer_overheat_resolved",
+                    message=f"Sovratemperatura accumulo rientrata ({temp}°C < {release_cutoff}°C): fine dissipazione forzata",
+                    metadata={"temp": temp, "release_cutoff": release_cutoff},
+                )
+
+        return was_ready != self.is_buffer_ready or was_overheat != self.is_buffer_overheat
 
     def evaluate_tick(
         self,
@@ -225,6 +268,15 @@ class HeatingSystem:
                 # Evaluate demand
                 demand, reason, details = room.evaluate_demand(now=t)
 
+                # Overheat safety override: force TRV fully open (max temperature)
+                if self.is_buffer_overheat:
+                    room.target_temp = room.max_temp
+                    room.heat_demand = True
+                    room.state = RoomState.HEATING
+                    room.status_reason = (
+                        "[Emergenza Sovratemperatura] TRV aperta al 100% per dissipazione termica"
+                    )
+
                 # Log significant room state transitions
                 if demand != prev_demand or room.state != prev_state:
                     event_type = (
@@ -250,7 +302,11 @@ class HeatingSystem:
             prev_zone_demand = zone.heat_demand
             prev_pump_state = zone.pump_controller.state
 
-            action, pump_reason = zone.evaluate(now=t, buffer_ready=self.is_buffer_ready)
+            action, pump_reason = zone.evaluate(
+                now=t,
+                buffer_ready=self.is_buffer_ready,
+                buffer_overheat=self.is_buffer_overheat,
+            )
 
             if zone.heat_demand != prev_zone_demand:
                 event_type = (
@@ -343,8 +399,11 @@ class HeatingSystem:
             "buffer_temp_sensor": self.buffer_temp_sensor,
             "buffer_min_temp": self.buffer_min_temp,
             "buffer_temp_hysteresis": self.buffer_temp_hysteresis,
+            "buffer_overheat_temp": self.buffer_overheat_temp,
+            "buffer_overheat_hysteresis": self.buffer_overheat_hysteresis,
             "buffer_current_temp": self.buffer_current_temp,
             "is_buffer_ready": self.is_buffer_ready,
+            "is_buffer_overheat": self.is_buffer_overheat,
             "total_heat_demand": self.total_heat_demand,
             "total_active_zones_count": self.total_active_zones_count,
             "total_active_rooms_count": self.total_active_rooms_count,
@@ -365,12 +424,20 @@ class HeatingSystem:
             buffer_temp_hysteresis=float(
                 data.get("buffer_temp_hysteresis", DEFAULT_BUFFER_TEMP_HYSTERESIS)
             ),
+            buffer_overheat_temp=float(
+                data.get("buffer_overheat_temp", DEFAULT_BUFFER_OVERHEAT_TEMP)
+            ),
+            buffer_overheat_hysteresis=float(
+                data.get("buffer_overheat_hysteresis", DEFAULT_BUFFER_OVERHEAT_HYSTERESIS)
+            ),
         )
         sys.buffer_current_temp = data.get("buffer_current_temp")
         if sys.buffer_temp_sensor:
             sys.is_buffer_ready = data.get("is_buffer_ready", False)
+            sys.is_buffer_overheat = data.get("is_buffer_overheat", False)
         else:
             sys.is_buffer_ready = True
+            sys.is_buffer_overheat = False
 
         for z_id, z_data in data.get("zones", {}).items():
             zone = HeatingZone.from_dict(z_data)

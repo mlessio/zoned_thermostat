@@ -52,7 +52,10 @@ class HeatingZone:
         return self.rooms.pop(room_id, None)
 
     def evaluate(
-        self, now: Optional[float] = None, buffer_ready: bool = True
+        self,
+        now: Optional[float] = None,
+        buffer_ready: bool = True,
+        buffer_overheat: bool = False,
     ) -> Tuple[PumpAction, str]:
         """Aggregate room demands, update zone state, and evaluate pump controller.
 
@@ -80,7 +83,12 @@ class HeatingZone:
         self.heat_demand = len(demanding_room_ids) > 0
 
         # 2. Update Zone State
-        if self.manual_pump_mode:
+        if buffer_overheat:
+            self.state = ZoneState.HEATING
+            self.status_reason = (
+                "[Emergenza Sovratemperatura] Pompa attiva per dissipazione termica accumulo"
+            )
+        elif self.manual_pump_mode:
             self.state = ZoneState.HEATING
             if self.heat_demand:
                 self.status_reason = (
@@ -107,11 +115,17 @@ class HeatingZone:
             self.status_reason = "Nessuna stanza richiede calore"
 
         # 3. Evaluate Pump
-        effective_demand = self.manual_pump_mode or (self.heat_demand and buffer_ready)
+        effective_demand = (
+            buffer_overheat
+            or self.manual_pump_mode
+            or (self.heat_demand and buffer_ready)
+        )
         action, pump_reason = self.pump_controller.evaluate(
             effective_demand, now=t
         )
-        if self.manual_pump_mode and action != PumpAction.NONE:
+        if buffer_overheat and action != PumpAction.NONE:
+            pump_reason = f"[Sicurezza Sovratemperatura] {pump_reason}"
+        elif self.manual_pump_mode and action != PumpAction.NONE:
             pump_reason = f"[Manuale] {pump_reason}"
 
         return (action, pump_reason)

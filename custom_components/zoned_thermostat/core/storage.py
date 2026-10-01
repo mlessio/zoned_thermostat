@@ -58,14 +58,11 @@ class ZonedThermostatStorage:
             return None
 
     async def async_save(self, system: HeatingSystem) -> None:
-        """Serialize and save HeatingSystem to disk."""
+        """Serialize and save HeatingSystem to disk immediately."""
         data = system.to_dict()
         if self._store:
             try:
-                if hasattr(self._store, "async_delay_save"):
-                    self._store.async_delay_save(lambda: data, delay=SAVE_DELAY)
-                else:
-                    await self._store.async_save(data)
+                await self._store.async_save(data)
             except Exception as err:
                 _LOGGER.error("Failed to save to Home Assistant store: %s", err)
         else:

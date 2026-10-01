@@ -54,6 +54,8 @@ except ImportError:
 
 from .const import (
     DEFAULT_BUFFER_MIN_TEMP,
+    DEFAULT_BUFFER_OVERHEAT_HYSTERESIS,
+    DEFAULT_BUFFER_OVERHEAT_TEMP,
     DEFAULT_BUFFER_TEMP_HYSTERESIS,
     DEFAULT_HYSTERESIS,
     DEFAULT_PRESET_COMFORT,
@@ -444,9 +446,12 @@ class ZonedThermostatOptionsFlow(config_entries.OptionsFlow):
         lines.append("**Accumulo Termico / Puffer:**")
         if system.buffer_temp_sensor:
             status = "PRONTO" if system.is_buffer_ready else "IN RISCALDAMENTO (pompe bloccate)"
+            if system.is_buffer_overheat:
+                status = "🚨 EMERGENZA SOVRATEMPERATURA (dissipazione attiva)"
             curr = f"{system.buffer_current_temp}°C" if system.buffer_current_temp is not None else "N/D"
             lines.append(f"- Sensore: `{system.buffer_temp_sensor}` (attuale: {curr})")
-            lines.append(f"- Soglia minima: {system.buffer_min_temp}°C | Isteresi stop: {system.buffer_temp_hysteresis}°C")
+            lines.append(f"- Soglia minima avvio: {system.buffer_min_temp}°C | Isteresi stop: {system.buffer_temp_hysteresis}°C")
+            lines.append(f"- Soglia sovratemperatura sicurezza: {system.buffer_overheat_temp}°C | Rientro: {system.buffer_overheat_temp - system.buffer_overheat_hysteresis}°C")
             lines.append(f"- Stato riserva: **{status}**")
         else:
             lines.append("- Nessun sensore accumulo configurato (controllo disattivato)")
@@ -484,14 +489,26 @@ class ZonedThermostatOptionsFlow(config_entries.OptionsFlow):
     async def async_step_buffer_settings(
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> config_entries.ConfigFlowResult:
-        """Configure thermal storage / buffer tank interlock."""
+        """Configure thermal storage / buffer tank interlock and safety dissipation."""
         system = self._get_system()
 
         if user_input is not None:
             sensor = user_input.get("buffer_temp_sensor")
             min_temp = float(user_input["buffer_min_temp"])
             hysteresis = float(user_input["buffer_temp_hysteresis"])
-            system.configure_buffer(sensor, min_temp, hysteresis)
+            overheat_temp = float(
+                user_input.get("buffer_overheat_temp", DEFAULT_BUFFER_OVERHEAT_TEMP)
+            )
+            overheat_hyst = float(
+                user_input.get("buffer_overheat_hysteresis", DEFAULT_BUFFER_OVERHEAT_HYSTERESIS)
+            )
+            system.configure_buffer(
+                sensor_id=sensor,
+                min_temp=min_temp,
+                hysteresis=hysteresis,
+                overheat_temp=overheat_temp,
+                overheat_hysteresis=overheat_hyst,
+            )
             await self._async_save_and_reload(system)
             return self.async_create_entry(title="", data={})
 
@@ -517,6 +534,22 @@ class ZonedThermostatOptionsFlow(config_entries.OptionsFlow):
                 ): selector.NumberSelector(
                     selector.NumberSelectorConfig(
                         min=0.5, max=10.0, step=0.5, unit_of_measurement="°C"
+                    )
+                ),
+                vol.Required(
+                    "buffer_overheat_temp",
+                    default=system.buffer_overheat_temp,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=60.0, max=95.0, step=1.0, unit_of_measurement="°C"
+                    )
+                ),
+                vol.Required(
+                    "buffer_overheat_hysteresis",
+                    default=system.buffer_overheat_hysteresis,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1.0, max=15.0, step=0.5, unit_of_measurement="°C"
                     )
                 ),
             }

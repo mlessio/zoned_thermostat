@@ -140,11 +140,13 @@ class TestOptionsFlow(unittest.TestCase):
         self.assertIsNone(self.sys.get_room("cucina"))
 
     def test_buffer_settings_flow(self):
-        """Configure buffer tank sensor, minimum start temp, and hysteresis."""
+        """Configure buffer tank sensor, minimum start temp, hysteresis, and overheat dissipation."""
         user_input = {
             "buffer_temp_sensor": "sensor.puffer_temperature",
             "buffer_min_temp": 48.0,
             "buffer_temp_hysteresis": 2.5,
+            "buffer_overheat_temp": 82.0,
+            "buffer_overheat_hysteresis": 4.5,
         }
         res = asyncio.run(self.flow.async_step_buffer_settings(user_input))
         self.assertEqual(res["type"], "create_entry")
@@ -153,6 +155,8 @@ class TestOptionsFlow(unittest.TestCase):
         )
         self.assertEqual(self.sys.buffer_min_temp, 48.0)
         self.assertEqual(self.sys.buffer_temp_hysteresis, 2.5)
+        self.assertEqual(self.sys.buffer_overheat_temp, 82.0)
+        self.assertEqual(self.sys.buffer_overheat_hysteresis, 4.5)
 
     def test_edit_room_presets(self):
         """Configure room-specific comfort and eco presets via edit_room_form."""

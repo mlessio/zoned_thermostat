@@ -273,6 +273,8 @@ class TestEnhancedHeatingFeatures(unittest.TestCase):
             "sensor_id": "sensor.puffer_high",
             "min_temp": 48.0,
             "hysteresis": 2.5,
+            "overheat_temp": 82.0,
+            "overheat_hysteresis": 4.0,
             "entry_id": "test_entry",
         }
         asyncio.run(ws_set_buffer_settings(self.mock_hass, mock_conn, msg4))
@@ -280,6 +282,94 @@ class TestEnhancedHeatingFeatures(unittest.TestCase):
         self.assertEqual(self.system.buffer_temp_sensor, "sensor.puffer_high")
         self.assertEqual(self.system.buffer_min_temp, 48.0)
         self.assertEqual(self.system.buffer_temp_hysteresis, 2.5)
+        self.assertEqual(self.system.buffer_overheat_temp, 82.0)
+        self.assertEqual(self.system.buffer_overheat_hysteresis, 4.0)
+
+    def test_buffer_overheat_safety_dissipation(self):
+        """Test emergency overheat dissipation: all TRVs open and all pumps run."""
+        self.room_cucina.trv_ids = ["climate.trv_cucina"]
+        self.room_camera.trv_ids = ["climate.trv_camera"]
+
+        self.system.configure_buffer(
+            sensor_id="sensor.puffer_temp",
+            min_temp=45.0,
+            hysteresis=2.0,
+            overheat_temp=80.0,
+            overheat_hysteresis=5.0,
+        )
+
+        now = 5000.0
+        # Normal state at 50°C (ready, but no heat demand in rooms)
+        self.room_cucina.target_temp = 20.0
+        self.room_cucina.update_sensor_temperature("sensor.cucina_temp", 22.0)
+        self.room_camera.target_temp = 18.0
+        self.room_camera.update_sensor_temperature("sensor.camera_temp", 20.0)
+
+        self.system.update_buffer_temperature(50.0)
+        self.assertTrue(self.system.is_buffer_ready)
+        self.assertFalse(self.system.is_buffer_overheat)
+
+        # Run evaluate tick -> no heat demand, pumps off
+        self.system.evaluate_tick("mon", "12:00", now=now)
+        self.assertFalse(self.zone1.pump_controller.is_physically_on)
+        self.assertFalse(self.zone2.pump_controller.is_physically_on)
+
+        # Buffer reaches 82.0°C (>= 80.0°C overheat threshold!)
+        self.system.update_buffer_temperature(82.0)
+        self.assertTrue(self.system.is_buffer_overheat)
+
+        # Evaluate tick: BOTH pumps MUST turn on, all rooms must demand heat at max target
+        pump_actions = self.system.evaluate_tick("mon", "12:00", now=now + 5)
+        self.assertTrue(self.zone1.pump_controller.is_physically_on)
+        self.assertTrue(self.zone2.pump_controller.is_physically_on)
+        self.assertEqual(self.room_cucina.target_temp, self.room_cucina.max_temp)
+        self.assertEqual(self.room_camera.target_temp, self.room_camera.max_temp)
+        self.assertIn("sovratemperatura", self.zone1.status_reason.lower())
+
+        # Test coordinator async_evaluate with overheat -> dispatches TRVs to max
+        asyncio.run(self.coordinator.async_evaluate())
+        calls = self.mock_hass.services.async_call.call_args_list
+        # Verify climate service was called with heat and max temperature
+        called_climates = [
+            c for c in calls if c[0][0] == "climate" and c[0][1] == "set_temperature"
+        ]
+        self.assertTrue(len(called_climates) >= 2)
+
+        # Buffer cools down to 78.0°C (above release threshold 80 - 5 = 75°C) -> STILL OVERHEAT
+        self.system.update_buffer_temperature(78.0)
+        self.assertTrue(self.system.is_buffer_overheat)
+
+        # Buffer drops to 74.0°C (< 75.0°C) -> OVERHEAT RESOLVED!
+        self.system.update_buffer_temperature(74.0)
+        self.assertFalse(self.system.is_buffer_overheat)
+
+    def test_buffer_settings_persistence(self):
+        """Verify buffer tank and overheat settings serialize and deserialize cleanly."""
+        self.system.configure_buffer(
+            sensor_id="sensor.accumulo_legna",
+            min_temp=52.0,
+            hysteresis=3.0,
+            overheat_temp=85.0,
+            overheat_hysteresis=6.0,
+        )
+        self.system.update_buffer_temperature(88.0)
+        self.assertTrue(self.system.is_buffer_overheat)
+
+        raw = self.system.to_dict()
+        self.assertEqual(raw["buffer_temp_sensor"], "sensor.accumulo_legna")
+        self.assertEqual(raw["buffer_min_temp"], 52.0)
+        self.assertEqual(raw["buffer_temp_hysteresis"], 3.0)
+        self.assertEqual(raw["buffer_overheat_temp"], 85.0)
+        self.assertEqual(raw["buffer_overheat_hysteresis"], 6.0)
+        self.assertTrue(raw["is_buffer_overheat"])
+
+        restored = HeatingSystem.from_dict(raw)
+        self.assertEqual(restored.buffer_temp_sensor, "sensor.accumulo_legna")
+        self.assertEqual(restored.buffer_min_temp, 52.0)
+        self.assertEqual(restored.buffer_temp_hysteresis, 3.0)
+        self.assertEqual(restored.buffer_overheat_temp, 85.0)
+        self.assertEqual(restored.buffer_overheat_hysteresis, 6.0)
+        self.assertTrue(restored.is_buffer_overheat)
 
 
 if __name__ == "__main__":

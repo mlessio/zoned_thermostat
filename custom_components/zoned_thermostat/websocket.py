@@ -32,7 +32,11 @@ except ImportError:
     def callback(fn):  # type: ignore
         return fn
 
-from .const import DOMAIN
+from .const import (
+    DEFAULT_BUFFER_OVERHEAT_HYSTERESIS,
+    DEFAULT_BUFFER_OVERHEAT_TEMP,
+    DOMAIN,
+)
 from .coordinator import ZonedThermostatCoordinator
 from .core.enums import GlobalMode, OverrideMode
 
@@ -376,6 +380,8 @@ async def ws_set_zone_pump_manual(
         vol.Optional("sensor_id"): vol.Any(str, None),
         vol.Required("min_temp"): vol.Coerce(float),
         vol.Required("hysteresis"): vol.Coerce(float),
+        vol.Optional("overheat_temp", default=DEFAULT_BUFFER_OVERHEAT_TEMP): vol.Coerce(float),
+        vol.Optional("overheat_hysteresis", default=DEFAULT_BUFFER_OVERHEAT_HYSTERESIS): vol.Coerce(float),
     }
 )
 @websocket_api.async_response
@@ -384,13 +390,15 @@ async def ws_set_buffer_settings(
     connection: websocket_api.ActiveConnection,
     msg: Dict[str, Any],
 ) -> None:
-    """Configure thermal storage / puffer temperature sensor and interlock thresholds."""
+    """Configure thermal storage / puffer temperature sensor, interlock, and safety dissipation."""
     try:
         coordinator = _get_coordinator(hass, msg.get("entry_id", ""))
         await coordinator.async_set_buffer_settings(
             sensor_id=msg.get("sensor_id"),
             min_temp=msg["min_temp"],
             hysteresis=msg["hysteresis"],
+            overheat_temp=msg.get("overheat_temp", DEFAULT_BUFFER_OVERHEAT_TEMP),
+            overheat_hysteresis=msg.get("overheat_hysteresis", DEFAULT_BUFFER_OVERHEAT_HYSTERESIS),
         )
         connection.send_result(msg["id"], {"success": True})
     except Exception as err:

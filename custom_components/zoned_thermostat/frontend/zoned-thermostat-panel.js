@@ -147,15 +147,222 @@ class ZonedThermostatPanel extends HTMLElement {
     await this._loadData();
   }
 
-  async _setBufferSettings(sensorId, minTemp, hysteresis) {
+  async _setBufferSettings(sensorId, minTemp, hysteresis, overheatTemp, overheatHyst) {
     if (!this._hass) return;
     await this._hass.callWS({
       type: "zoned_thermostat/set_buffer_settings",
-      sensor_id: sensorId,
+      sensor_id: sensorId ? sensorId.trim() : null,
       min_temp: parseFloat(minTemp),
       hysteresis: parseFloat(hysteresis),
+      overheat_temp: parseFloat(overheatTemp !== undefined ? overheatTemp : 80.0),
+      overheat_hysteresis: parseFloat(overheatHyst !== undefined ? overheatHyst : 5.0),
     });
     await this._loadData();
+  }
+
+  _openModal({ title, contentHtml, onConfirm, onCancel }) {
+    const modal = this.shadowRoot.getElementById("app-modal");
+    const titleEl = this.shadowRoot.getElementById("modal-title");
+    const bodyEl = this.shadowRoot.getElementById("modal-body");
+    const confirmBtn = this.shadowRoot.getElementById("modal-btn-confirm");
+    const cancelBtn = this.shadowRoot.getElementById("modal-btn-cancel");
+    const closeBtn = this.shadowRoot.getElementById("modal-btn-close");
+
+    if (!modal) return;
+    if (titleEl) titleEl.innerHTML = title;
+    if (bodyEl) bodyEl.innerHTML = contentHtml;
+
+    this._modalOnConfirm = onConfirm;
+    this._modalOnCancel = onCancel;
+
+    modal.classList.remove("hidden");
+
+    const closeHandler = () => {
+      this._closeModal();
+      if (this._modalOnCancel) this._modalOnCancel();
+    };
+
+    if (cancelBtn) cancelBtn.onclick = closeHandler;
+    if (closeBtn) closeBtn.onclick = closeHandler;
+    if (confirmBtn) {
+      confirmBtn.onclick = async () => {
+        if (this._modalOnConfirm) {
+          await this._modalOnConfirm();
+        }
+        this._closeModal();
+      };
+    }
+  }
+
+  _closeModal() {
+    const modal = this.shadowRoot.getElementById("app-modal");
+    if (modal) modal.classList.add("hidden");
+    this._modalOnConfirm = null;
+    this._modalOnCancel = null;
+  }
+
+  _openTargetDialog(roomId, roomName, currentTarget) {
+    let tempVal = parseFloat(currentTarget) || 20.0;
+    const updateDisplay = () => {
+      const displayEl = this.shadowRoot.getElementById("modal-stepper-val");
+      if (displayEl) displayEl.textContent = `${tempVal.toFixed(1)}°C`;
+      const numInput = this.shadowRoot.getElementById("modal-num-input");
+      if (numInput && parseFloat(numInput.value) !== tempVal) numInput.value = tempVal.toFixed(1);
+    };
+
+    const content = `
+      <div style="text-align: center; margin-bottom: 6px;">
+        <span style="font-size: 1.05rem; color: #bbb;">Regola la temperatura desiderata per:</span>
+        <div style="font-size: 1.35rem; font-weight: 700; color: #fff; margin-top: 4px;">${roomName}</div>
+      </div>
+      <div class="modal-stepper-box">
+        <button class="modal-stepper-btn" id="modal-step-minus" type="button">-</button>
+        <span class="modal-temp-val" id="modal-stepper-val">${tempVal.toFixed(1)}°C</span>
+        <button class="modal-stepper-btn" id="modal-step-plus" type="button">+</button>
+      </div>
+      <div class="modal-field" style="margin-top: 10px;">
+        <label>Oppure digita direttamente il valore (°C):</label>
+        <input class="modal-input" id="modal-num-input" type="number" step="0.5" min="10" max="30" value="${tempVal.toFixed(1)}" />
+      </div>
+    `;
+
+    this._openModal({
+      title: `🎯 Imposta Setpoint`,
+      contentHtml: content,
+      onConfirm: async () => {
+        const inputEl = this.shadowRoot.getElementById("modal-num-input");
+        const val = inputEl ? parseFloat(inputEl.value) : tempVal;
+        if (!isNaN(val)) {
+          await this._setRoomOverride(roomId, val);
+        }
+      },
+    });
+
+    const minusBtn = this.shadowRoot.getElementById("modal-step-minus");
+    const plusBtn = this.shadowRoot.getElementById("modal-step-plus");
+    const numInput = this.shadowRoot.getElementById("modal-num-input");
+
+    if (minusBtn) {
+      minusBtn.onclick = () => {
+        tempVal = Math.round((tempVal - 0.5) * 10) / 10;
+        updateDisplay();
+      };
+    }
+    if (plusBtn) {
+      plusBtn.onclick = () => {
+        tempVal = Math.round((tempVal + 0.5) * 10) / 10;
+        updateDisplay();
+      };
+    }
+    if (numInput) {
+      numInput.oninput = (e) => {
+        const parsed = parseFloat(e.target.value);
+        if (!isNaN(parsed)) {
+          tempVal = parsed;
+          const displayEl = this.shadowRoot.getElementById("modal-stepper-val");
+          if (displayEl) displayEl.textContent = `${tempVal.toFixed(1)}°C`;
+        }
+      };
+    }
+  }
+
+  _openBufferSettingsDialog() {
+    const sys = this._systemData;
+    const currSensor = sys.buffer_temp_sensor || "";
+    const currMin = sys.buffer_min_temp !== undefined ? sys.buffer_min_temp : 45.0;
+    const currHyst = sys.buffer_temp_hysteresis !== undefined ? sys.buffer_temp_hysteresis : 2.0;
+    const currOverheat = sys.buffer_overheat_temp !== undefined ? sys.buffer_overheat_temp : 80.0;
+    const currOverheatHyst = sys.buffer_overheat_hysteresis !== undefined ? sys.buffer_overheat_hysteresis : 5.0;
+
+    const content = `
+      <div class="modal-field">
+        <label>Sensore Temperatura Puffer (Entity ID):</label>
+        <input class="modal-input" id="buf-sensor" type="text" placeholder="es. sensor.temperatura_puffer" value="${currSensor}" />
+        <span style="font-size: 0.78rem; color: #888;">Lascia vuoto se non colleghi un sensore per l'accumulo.</span>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+        <div class="modal-field">
+          <label>Temperatura Minima Avvio (°C):</label>
+          <input class="modal-input" id="buf-min" type="number" step="0.5" min="20" max="80" value="${currMin}" />
+        </div>
+        <div class="modal-field">
+          <label>Isteresi Spegnimento (°C):</label>
+          <input class="modal-input" id="buf-hyst" type="number" step="0.5" min="0.5" max="10" value="${currHyst}" />
+        </div>
+      </div>
+
+      <div style="margin-top: 10px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.08);">
+        <div style="font-weight: 700; color: #ff5252; font-size: 0.95rem; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+          🚨 Sicurezza Sovratemperatura (Dissipazione Termica)
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div class="modal-field">
+            <label>Soglia Sovratemperatura (°C):</label>
+            <input class="modal-input" id="buf-overheat" type="number" step="1" min="60" max="95" value="${currOverheat}" />
+          </div>
+          <div class="modal-field">
+            <label>Isteresi Rientro (°C):</label>
+            <input class="modal-input" id="buf-overheat-hyst" type="number" step="0.5" min="1" max="15" value="${currOverheatHyst}" />
+          </div>
+        </div>
+        <div style="font-size: 0.78rem; color: #aaa; margin-top: 6px;">
+          Se superata, tutte le pompe e tutte le valvole TRV verranno forzate accese al 100% per smaltire l'eccesso di calore.
+        </div>
+      </div>
+    `;
+
+    this._openModal({
+      title: "🛢️ Configura Accumulo & Sicurezza",
+      contentHtml: content,
+      onConfirm: async () => {
+        const sEl = this.shadowRoot.getElementById("buf-sensor");
+        const mEl = this.shadowRoot.getElementById("buf-min");
+        const hEl = this.shadowRoot.getElementById("buf-hyst");
+        const oEl = this.shadowRoot.getElementById("buf-overheat");
+        const ohEl = this.shadowRoot.getElementById("buf-overheat-hyst");
+
+        const sensorVal = sEl ? sEl.value.trim() : "";
+        const minVal = mEl ? parseFloat(mEl.value) : 45.0;
+        const hystVal = hEl ? parseFloat(hEl.value) : 2.0;
+        const overheatVal = oEl ? parseFloat(oEl.value) : 80.0;
+        const overheatHystVal = ohEl ? parseFloat(ohEl.value) : 5.0;
+
+        await this._setBufferSettings(sensorVal || null, minVal, hystVal, overheatVal, overheatHystVal);
+      },
+    });
+  }
+
+  _openRoomPresetsDialog(roomId, roomName, currComfort, currEco) {
+    const content = `
+      <div style="font-size: 0.95rem; color: #ccc; margin-bottom: 12px;">
+        Imposta le temperature indipendenti per la stanza <strong>${roomName}</strong>:
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+        <div class="modal-field">
+          <label>Temperatura Comfort (°C):</label>
+          <input class="modal-input" id="preset-comfort" type="number" step="0.5" min="14" max="30" value="${currComfort}" />
+        </div>
+        <div class="modal-field">
+          <label>Temperatura Eco (°C):</label>
+          <input class="modal-input" id="preset-eco" type="number" step="0.5" min="10" max="25" value="${currEco}" />
+        </div>
+      </div>
+    `;
+
+    this._openModal({
+      title: `✏️ Modifica Preset: ${roomName}`,
+      contentHtml: content,
+      onConfirm: async () => {
+        const cEl = this.shadowRoot.getElementById("preset-comfort");
+        const eEl = this.shadowRoot.getElementById("preset-eco");
+        const cVal = cEl ? parseFloat(cEl.value) : 21.0;
+        const eVal = eEl ? parseFloat(eEl.value) : 18.0;
+        if (!isNaN(cVal) && !isNaN(eVal)) {
+          await this._setRoomPresets(roomId, { comfort: cVal, eco: eVal });
+        }
+      },
+    });
   }
 
   _render() {
@@ -657,6 +864,237 @@ class ZonedThermostatPanel extends HTMLElement {
           font-weight: 500;
           margin-top: 4px;
         }
+
+        /* EMERGENCY OVERHEAT BANNER */
+        .emergency-banner {
+          background: linear-gradient(90deg, #b71c1c, #d32f2f, #b71c1c);
+          border: 2px solid #ff5252;
+          border-radius: 12px;
+          padding: 16px 20px;
+          margin-bottom: 24px;
+          color: #ffffff;
+          display: flex;
+          align-items: center;
+          gap: 16px;
+          box-shadow: 0 0 24px rgba(244, 67, 54, 0.6);
+          animation: pulseBanner 2s infinite ease-in-out;
+        }
+        @keyframes pulseBanner {
+          0% { box-shadow: 0 0 16px rgba(244, 67, 54, 0.4); }
+          50% { box-shadow: 0 0 28px rgba(244, 67, 54, 0.85); }
+          100% { box-shadow: 0 0 16px rgba(244, 67, 54, 0.4); }
+        }
+        .emergency-banner-icon {
+          font-size: 2.2rem;
+          flex-shrink: 0;
+        }
+        .emergency-banner-title {
+          font-size: 1.15rem;
+          font-weight: 800;
+          margin: 0 0 4px 0;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+        .emergency-banner-text {
+          margin: 0;
+          font-size: 0.92rem;
+          line-height: 1.4;
+          opacity: 0.95;
+        }
+
+        .badge-buffer-overheat {
+          border-color: rgba(244, 67, 54, 0.7) !important;
+          background: rgba(244, 67, 54, 0.25) !important;
+          animation: pulseBanner 2s infinite ease-in-out;
+        }
+
+        /* COMPACT 4-COLUMN VIEW */
+        .compact-rooms-grid {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: 14px;
+        }
+        @media (max-width: 1300px) {
+          .compact-rooms-grid { grid-template-columns: repeat(3, 1fr); }
+        }
+        @media (max-width: 900px) {
+          .compact-rooms-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 550px) {
+          .compact-rooms-grid { grid-template-columns: 1fr; }
+        }
+
+        .compact-room-item {
+          background: rgba(255, 255, 255, 0.03);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: 12px;
+          padding: 14px;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+          transition: background 0.2s, transform 0.15s;
+        }
+        .compact-room-item:hover {
+          background: rgba(255, 255, 255, 0.06);
+          transform: translateY(-1px);
+        }
+
+        /* THEMED MODAL DIALOG */
+        .modal-backdrop {
+          position: fixed;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: rgba(0, 0, 0, 0.75);
+          backdrop-filter: blur(8px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 99999;
+          opacity: 1;
+          transition: opacity 0.2s ease;
+        }
+        .modal-backdrop.hidden {
+          display: none;
+          opacity: 0;
+        }
+        .modal-dialog {
+          background: #1c1c1e;
+          border: 1px solid rgba(255, 255, 255, 0.15);
+          border-radius: 18px;
+          box-shadow: 0 24px 48px rgba(0, 0, 0, 0.6);
+          width: 92%;
+          max-width: 480px;
+          overflow: hidden;
+          animation: modalPop 0.22s ease-out;
+        }
+        @keyframes modalPop {
+          0% { transform: scale(0.92); opacity: 0; }
+          100% { transform: scale(1); opacity: 1; }
+        }
+        .modal-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 18px 24px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .modal-header h3 {
+          margin: 0;
+          font-size: 1.2rem;
+          font-weight: 700;
+          color: #ffffff;
+        }
+        .modal-close-btn {
+          background: none;
+          border: none;
+          color: #888;
+          font-size: 1.6rem;
+          cursor: pointer;
+          padding: 0;
+          line-height: 1;
+          transition: color 0.15s;
+        }
+        .modal-close-btn:hover {
+          color: #fff;
+        }
+        .modal-body {
+          padding: 24px;
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+        .modal-field {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .modal-field label {
+          font-size: 0.85rem;
+          font-weight: 600;
+          color: #bbb;
+        }
+        .modal-input {
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.15);
+          border-radius: 10px;
+          color: #ffffff;
+          padding: 12px 16px;
+          font-size: 1rem;
+          outline: none;
+          transition: border-color 0.2s;
+          box-sizing: border-box;
+          width: 100%;
+        }
+        .modal-input:focus {
+          border-color: var(--primary-color, #03a9f4);
+          box-shadow: 0 0 0 2px rgba(3, 169, 244, 0.2);
+        }
+        .modal-stepper-box {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 20px;
+          margin: 14px 0;
+        }
+        .modal-stepper-btn {
+          width: 50px;
+          height: 50px;
+          border-radius: 50%;
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          background: rgba(255, 255, 255, 0.08);
+          color: #fff;
+          font-size: 1.6rem;
+          font-weight: bold;
+          cursor: pointer;
+          transition: background 0.2s;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .modal-stepper-btn:hover {
+          background: rgba(255, 255, 255, 0.18);
+        }
+        .modal-temp-val {
+          font-size: 2.8rem;
+          font-weight: 800;
+          color: #fff;
+          min-width: 140px;
+          text-align: center;
+          letter-spacing: -1px;
+        }
+        .modal-footer {
+          display: flex;
+          justify-content: flex-end;
+          gap: 12px;
+          padding: 16px 24px;
+          background: rgba(0, 0, 0, 0.2);
+          border-top: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .modal-btn {
+          padding: 10px 20px;
+          border-radius: 10px;
+          font-weight: 600;
+          font-size: 0.95rem;
+          cursor: pointer;
+          border: none;
+          transition: all 0.2s;
+        }
+        .modal-btn-secondary {
+          background: rgba(255, 255, 255, 0.08);
+          color: #ccc;
+        }
+        .modal-btn-secondary:hover {
+          background: rgba(255, 255, 255, 0.15);
+          color: #fff;
+        }
+        .modal-btn-primary {
+          background: var(--primary-color, #03a9f4);
+          color: #fff;
+          box-shadow: 0 4px 14px rgba(3, 169, 244, 0.35);
+        }
+        .modal-btn-primary:hover {
+          background: #0288d1;
+        }
       </style>
 
       <!-- HEADER -->
@@ -686,21 +1124,32 @@ class ZonedThermostatPanel extends HTMLElement {
           </div>
 
           ${sys.buffer_temp_sensor ? `
-            <div class="badge-metric ${sys.is_buffer_ready ? 'badge-buffer-ready' : 'badge-buffer-waiting'}" title="Sensore: ${sys.buffer_temp_sensor} | Isteresi stop: ${sys.buffer_temp_hysteresis}°C">
+            <div class="badge-metric ${sys.is_buffer_overheat ? 'badge-buffer-overheat' : (sys.is_buffer_ready ? 'badge-buffer-ready' : 'badge-buffer-waiting')}" title="Sensore: ${sys.buffer_temp_sensor} | Min: ${sys.buffer_min_temp}°C | Sovratemp: ${sys.buffer_overheat_temp || 80}°C">
               <span>🛢️ Accumulo:</span>
               <strong style="color: #ffffff;">${sys.buffer_current_temp !== null && sys.buffer_current_temp !== undefined ? `${sys.buffer_current_temp}°C` : '--'}</strong>
-              <span style="font-size: 0.78rem; opacity: 0.85;">(min ${sys.buffer_min_temp}°C)</span>
-              <span style="font-weight: 700; color: ${sys.is_buffer_ready ? '#4caf50' : '#ff9800'}">
-                ${sys.is_buffer_ready ? '✓ PRONTO' : '⏳ IN ATTESA'}
+              <span style="font-size: 0.78rem; opacity: 0.85;">(min ${sys.buffer_min_temp}°C / max ${sys.buffer_overheat_temp || 80}°C)</span>
+              <span style="font-weight: 700; color: ${sys.is_buffer_overheat ? '#ff5252' : (sys.is_buffer_ready ? '#4caf50' : '#ff9800')}">
+                ${sys.is_buffer_overheat ? '🚨 SOVRATEMPERATURA' : (sys.is_buffer_ready ? '✓ PRONTO' : '⏳ IN ATTESA')}
               </span>
             </div>
           ` : ''}
         </div>
       </div>
 
+      ${sys.is_buffer_overheat ? `
+        <div class="emergency-banner">
+          <div class="emergency-banner-icon">🚨</div>
+          <div>
+            <div class="emergency-banner-title">EMERGENZA SOVRATEMPERATURA ACCUMULO (${sys.buffer_current_temp !== null ? `${sys.buffer_current_temp}°C` : ''} &ge; ${sys.buffer_overheat_temp}°C)</div>
+            <p class="emergency-banner-text">Dissipazione termica di sicurezza attiva: tutte le pompe di zona sono forzate ACCESE e tutte le valvole TRV sono forzate al 100% aperte per smaltire l'eccesso termico finché la temperatura dell'accumulo non scende sotto a ${(sys.buffer_overheat_temp - (sys.buffer_overheat_hysteresis || 5)).toFixed(1)}°C.</p>
+          </div>
+        </div>
+      ` : ''}
+
       <!-- TABS -->
       <div class="nav-tabs">
         <button class="tab-btn ${this._activeTab === 'dashboard' ? 'active' : ''}" id="tab-dash">Panoramica & Zone</button>
+        <button class="tab-btn ${this._activeTab === 'compact' ? 'active' : ''}" id="tab-compact">Vista Compatta (4x)</button>
         <button class="tab-btn ${this._activeTab === 'scheduler' ? 'active' : ''}" id="tab-sched">Pianificazione Settimanale</button>
         <button class="tab-btn ${this._activeTab === 'config' ? 'active' : ''}" id="tab-config">⚙️ Configurazione & Entità</button>
         <button class="tab-btn ${this._activeTab === 'diagnostics' ? 'active' : ''}" id="tab-diag">Diagnostica & Timeline</button>
@@ -709,9 +1158,25 @@ class ZonedThermostatPanel extends HTMLElement {
       <!-- CONTENT SWITCH -->
       <div id="tab-content">
         ${this._activeTab === 'dashboard' ? this._renderDashboard(sys) : ''}
+        ${this._activeTab === 'compact' ? this._renderCompactDashboard(sys) : ''}
         ${this._activeTab === 'scheduler' ? this._renderScheduler(sys) : ''}
         ${this._activeTab === 'config' ? this._renderConfiguration(sys) : ''}
         ${this._activeTab === 'diagnostics' ? this._renderDiagnostics(sys) : ''}
+      </div>
+
+      <!-- THEMED MODAL DIALOG CONTAINER -->
+      <div id="app-modal" class="modal-backdrop hidden">
+        <div class="modal-dialog">
+          <div class="modal-header">
+            <h3 id="modal-title">Titolo</h3>
+            <button class="modal-close-btn" id="modal-btn-close">&times;</button>
+          </div>
+          <div class="modal-body" id="modal-body"></div>
+          <div class="modal-footer" id="modal-footer">
+            <button class="modal-btn modal-btn-secondary" id="modal-btn-cancel">Annulla</button>
+            <button class="modal-btn modal-btn-primary" id="modal-btn-confirm">Salva</button>
+          </div>
+        </div>
       </div>
     `;
 
@@ -727,6 +1192,125 @@ class ZonedThermostatPanel extends HTMLElement {
     return `
       <div class="zones-grid">
         ${zones.map(z => this._renderZoneCard(z)).join("")}
+      </div>
+    `;
+  }
+
+  _renderCompactDashboard(sys) {
+    const zones = Object.values(sys.zones || {});
+    if (zones.length === 0) {
+      return `<div style="text-align: center; padding: 40px;">Nessuna zona configurata nell'impianto.</div>`;
+    }
+
+    return `
+      <div style="display: flex; flex-direction: column; gap: 20px;">
+        ${zones.map(z => this._renderCompactZone(z)).join("")}
+      </div>
+    `;
+  }
+
+  _renderCompactZone(zone) {
+    const isPumpOn = zone.pump && zone.pump.is_physically_on;
+    const isManual = Boolean(zone.manual_pump_mode);
+    const rooms = Object.values(zone.rooms || {});
+
+    return `
+      <div class="zone-card" style="padding: 16px 20px;">
+        <div class="zone-header" style="margin-bottom: 14px; padding-bottom: 12px;">
+          <div style="display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;">
+            <h2 class="zone-title" style="font-size: 1.25rem;">${zone.name}</h2>
+            <span style="font-size: 0.8rem; color: #888;">Pompa: <code>${zone.pump ? zone.pump.pump_switch_id : 'N/D'}</code></span>
+            ${isManual ? '<span style="font-size: 0.78rem; color: #ffb74d; font-weight: 700;">[Forzata Manuale]</span>' : ''}
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <button class="pump-manual-toggle ${isManual ? 'pump-manual-on' : 'pump-manual-auto'}"
+                    style="font-size: 0.75rem; padding: 4px 10px;"
+                    data-action="toggle-pump-manual"
+                    data-zone="${zone.zone_id}"
+                    data-manual="${isManual}">
+              ${isManual ? '🔥 MANUALE' : '⚙️ AUTO'}
+            </button>
+            <div class="pump-indicator ${isPumpOn ? 'pump-on' : 'pump-off'}" style="font-size: 0.75rem; padding: 4px 10px;">
+              <span>${isPumpOn ? '● ACCESA' : '○ SPENTA'}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="compact-rooms-grid">
+          ${rooms.map(r => this._renderCompactRoomItem(r)).join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  _renderCompactRoomItem(room) {
+    const currTemp = room.current_temp !== null && room.current_temp !== undefined ? `${room.current_temp}°C` : "--";
+    const targetTemp = `${room.target_temp}°C`;
+
+    let badgeClass = "badge-idle";
+    let badgeText = "RIPOSO";
+    if (room.state === "heating") {
+      badgeClass = "badge-heating";
+      badgeText = "🔥 CALDO";
+    } else if (room.state === "target_reached") {
+      badgeClass = "badge-reached";
+      badgeText = "✓ TARGET";
+    } else if (room.state === "window_open") {
+      badgeClass = "badge-window";
+      badgeText = "⏸ APERTA";
+    } else if (room.manual_override) {
+      badgeClass = "badge-override";
+      badgeText = "⏱ OVERRIDE";
+    }
+
+    const eff = room.effective_presets || {};
+    const comfortVal = eff.comfort !== undefined ? eff.comfort : 21.0;
+    const ecoVal = eff.eco !== undefined ? eff.eco : 18.0;
+    const isComfortActive = Math.abs(room.target_temp - comfortVal) < 0.1;
+    const isEcoActive = Math.abs(room.target_temp - ecoVal) < 0.1;
+
+    return `
+      <div class="compact-room-item">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <h4 style="margin: 0; font-size: 1rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${room.name}">
+            🏠 ${room.name}
+          </h4>
+          <span class="badge-status ${badgeClass}" style="font-size: 0.68rem; padding: 2px 6px;">${badgeText}</span>
+        </div>
+
+        <div style="display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px;">
+          <div style="display: flex; align-items: baseline; gap: 4px;">
+            <span style="font-size: 1.65rem; font-weight: 800; letter-spacing: -0.5px;">${currTemp}</span>
+            <span style="font-size: 0.85rem; color: #888;">/</span>
+            <span class="clickable-target" data-action="prompt-target" data-room="${room.room_id}" data-target="${room.target_temp}" data-name="${room.name}" style="font-size: 0.95rem; font-weight: 700; color: #03a9f4;" title="Clicca per modificare">${targetTemp}</span>
+          </div>
+          <div class="temp-stepper" style="transform: scale(0.9); transform-origin: right center;">
+            <button class="step-btn" style="padding: 2px 8px; font-size: 1.05rem;" data-action="step-down" data-room="${room.room_id}" data-target="${room.target_temp}">-</button>
+            <button class="step-btn" style="padding: 2px 8px; font-size: 1.05rem;" data-action="step-up" data-room="${room.room_id}" data-target="${room.target_temp}">+</button>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 6px; align-items: center;">
+          <button class="preset-pill ${isComfortActive ? 'active-preset' : ''}"
+                  style="font-size: 0.72rem; padding: 5px 6px; flex: 1; text-align: center;"
+                  data-action="apply-preset"
+                  data-room="${room.room_id}"
+                  data-preset="comfort"
+                  title="Comfort (${comfortVal}°C)">
+            Comfort ${comfortVal}°
+          </button>
+          <button class="preset-pill ${isEcoActive ? 'active-preset' : ''}"
+                  style="font-size: 0.72rem; padding: 5px 6px; flex: 1; text-align: center;"
+                  data-action="apply-preset"
+                  data-room="${room.room_id}"
+                  data-preset="eco"
+                  title="Eco (${ecoVal}°C)">
+            Eco ${ecoVal}°
+          </button>
+          ${room.manual_override ? `
+            <button class="preset-pill" style="color: #ff5252; padding: 5px 8px; font-size: 0.72rem;" data-action="clear-override" data-room="${room.room_id}" title="Ripristina orario">✕</button>
+          ` : ''}
+        </div>
       </div>
     `;
   }
@@ -980,18 +1564,19 @@ class ZonedThermostatPanel extends HTMLElement {
         <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 18px 22px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 12px;">
             <h3 style="margin: 0; font-size: 1.2rem; display: flex; align-items: center; gap: 8px;">
-              🛢️ Accumulo Termico / Puffer (Interblocco Pompe)
+              🛢️ Accumulo Termico / Puffer (Interblocco Pompe & Sicurezza)
             </h3>
-            <button class="preset-pill" data-action="edit-buffer-settings" style="font-size: 0.85rem; padding: 6px 14px; background: rgba(3, 169, 244, 0.2); border: 1px solid rgba(3, 169, 244, 0.4); color: #fff;">
-              ✏️ Modifica Soglie Accumulo
+            <button class="preset-pill" data-action="edit-buffer-settings" style="font-size: 0.85rem; padding: 8px 16px; background: rgba(3, 169, 244, 0.25); border: 1px solid rgba(3, 169, 244, 0.5); color: #fff; font-weight: 700;">
+              ✏️ Configura Accumulo & Sicurezza
             </button>
           </div>
           <div style="font-size: 0.9rem; line-height: 1.8; color: #ddd;">
             <div>• <strong>Sensore Temperatura:</strong> <code>${sys.buffer_temp_sensor || 'Nessuno (controllo disattivato, pompe libere)'}</code></div>
             <div>• <strong>Temperatura Attuale:</strong> <strong>${sys.buffer_current_temp !== null && sys.buffer_current_temp !== undefined ? `${sys.buffer_current_temp}°C` : 'N/D'}</strong></div>
-            <div>• <strong>Soglia Minima di Avvio:</strong> ${sys.buffer_min_temp}°C (le pompe non partono finché l'accumulo non raggiunge questo valore)</div>
-            <div>• <strong>Isteresi di Spegnimento:</strong> ${sys.buffer_temp_hysteresis}°C (spegne le pompe se l'acqua scende sotto a ${(sys.buffer_min_temp - sys.buffer_temp_hysteresis).toFixed(1)}°C)</div>
-            <div>• <strong>Stato Riserva:</strong> <strong style="color: ${sys.is_buffer_ready ? '#4caf50' : '#ff9800'}">${sys.is_buffer_ready ? '✓ PRONTO (avvio pompe autorizzato)' : '⏳ IN ATTESA RISERVA (pompe bloccate)'}</strong></div>
+            <div>• <strong>Soglia Minima Avvio:</strong> ${sys.buffer_min_temp}°C (le pompe non partono finché l'accumulo non raggiunge questo valore)</div>
+            <div>• <strong>Isteresi Spegnimento Pompe:</strong> ${sys.buffer_temp_hysteresis}°C (spegne le pompe se l'acqua scende sotto a ${(sys.buffer_min_temp - sys.buffer_temp_hysteresis).toFixed(1)}°C)</div>
+            <div>• <strong>Soglia Sovratemperatura (Sicurezza):</strong> <span style="color: #ff5252; font-weight: 700;">${sys.buffer_overheat_temp || 80}°C</span> (rientro a ${( (sys.buffer_overheat_temp || 80) - (sys.buffer_overheat_hysteresis || 5) ).toFixed(1)}°C)</div>
+            <div>• <strong>Stato Riserva:</strong> ${sys.is_buffer_overheat ? '<strong style="color: #ff5252;">🚨 EMERGENZA SOVRATEMPERATURA (dissipazione attiva: pompe ON, TRV aperte al 100%)</strong>' : (sys.is_buffer_ready ? '<strong style="color: #4caf50;">✓ PRONTO (avvio pompe autorizzato)</strong>' : '<strong style="color: #ff9800;">⏳ IN ATTESA RISERVA (pompe bloccate)</strong>')}</div>
           </div>
         </div>
 
@@ -1051,10 +1636,12 @@ class ZonedThermostatPanel extends HTMLElement {
     const root = this.shadowRoot;
 
     const tabDash = root.getElementById("tab-dash");
+    const tabCompact = root.getElementById("tab-compact");
     const tabSched = root.getElementById("tab-sched");
     const tabConfig = root.getElementById("tab-config");
     const tabDiag = root.getElementById("tab-diag");
     if (tabDash) tabDash.onclick = () => { this._activeTab = "dashboard"; this._render(); };
+    if (tabCompact) tabCompact.onclick = () => { this._activeTab = "compact"; this._render(); };
     if (tabSched) tabSched.onclick = () => { this._activeTab = "scheduler"; this._render(); };
     if (tabConfig) tabConfig.onclick = () => { this._activeTab = "config"; this._render(); };
     if (tabDiag) tabDiag.onclick = () => { this._activeTab = "diagnostics"; this._render(); };
@@ -1093,43 +1680,18 @@ class ZonedThermostatPanel extends HTMLElement {
         } else if (action === "prompt-target") {
           const curr = parseFloat(btn.dataset.target) || 20.0;
           const roomName = btn.dataset.name || "Stanza";
-          const input = prompt(`Imposta temperatura desiderata per ${roomName} (°C):`, curr);
-          if (input !== null) {
-            const val = parseFloat(input);
-            if (!isNaN(val)) {
-              await this._setRoomOverride(roomId, val);
-            }
-          }
+          this._openTargetDialog(roomId, roomName, curr);
         } else if (action === "toggle-pump-manual") {
           const zoneId = btn.dataset.zone;
           const isManual = btn.dataset.manual === "true";
           await this._setZonePumpManual(zoneId, !isManual);
         } else if (action === "edit-buffer-settings") {
-          const sys = this._systemData;
-          const currMin = sys.buffer_min_temp !== undefined ? sys.buffer_min_temp : 45.0;
-          const currHyst = sys.buffer_temp_hysteresis !== undefined ? sys.buffer_temp_hysteresis : 2.0;
-          const newMin = prompt(`Temperatura minima di avvio accumulo (°C):`, currMin);
-          if (newMin === null) return;
-          const newHyst = prompt(`Isteresi di spegnimento pompe accumulo (°C):`, currHyst);
-          if (newHyst === null) return;
-          const mVal = parseFloat(newMin);
-          const hVal = parseFloat(newHyst);
-          if (!isNaN(mVal) && !isNaN(hVal)) {
-            await this._setBufferSettings(sys.buffer_temp_sensor, mVal, hVal);
-          }
+          this._openBufferSettingsDialog();
         } else if (action === "edit-room-presets") {
           const roomName = btn.dataset.name || "Stanza";
           const currC = btn.dataset.comfort || "21";
           const currE = btn.dataset.eco || "18";
-          const newC = prompt(`Temperatura Comfort per ${roomName} (°C):`, currC);
-          if (newC === null) return;
-          const newE = prompt(`Temperatura Eco per ${roomName} (°C):`, currE);
-          if (newE === null) return;
-          const cVal = parseFloat(newC);
-          const eVal = parseFloat(newE);
-          if (!isNaN(cVal) && !isNaN(eVal)) {
-            await this._setRoomPresets(roomId, { comfort: cVal, eco: eVal });
-          }
+          this._openRoomPresetsDialog(roomId, roomName, currC, currE);
         }
       };
     });

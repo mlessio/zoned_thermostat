@@ -38,7 +38,11 @@ except ImportError:
     async_track_state_change_event = None  # type: ignore
     async_track_time_interval = None  # type: ignore
 
-from .const import DOMAIN
+from .const import (
+    DEFAULT_BUFFER_OVERHEAT_HYSTERESIS,
+    DEFAULT_BUFFER_OVERHEAT_TEMP,
+    DOMAIN,
+)
 from .core.enums import GlobalMode, OverrideMode, RoomState
 from .core.pump import PumpAction
 from .core.storage import ZonedThermostatStorage
@@ -270,24 +274,44 @@ class ZonedThermostatCoordinator:
                     blocking=False,
                 )
 
-        # Dispatch TRV targets if room target changed or TRVs not synchronized
+        # Dispatch TRV targets if room target changed, TRVs not synchronized, or overheat dissipation active
         for room in self.system.all_rooms():
             target = room.target_temp
-            # If target changed or room in HVAC OFF mode
-            if prev_targets.get(room.room_id) != target or room.hvac_mode == "off":
+            if self.system.is_buffer_overheat:
+                await self.async_sync_room_trvs(room, force_max=True)
+            elif prev_targets.get(room.room_id) != target or room.hvac_mode == "off":
                 await self.async_sync_room_trvs(room)
 
         # Notify Home Assistant entity listeners
         self.notify_entity_listeners()
 
-        # Save state with debounce
+        # Save state immediately to storage
         await self.storage.async_save(self.system)
 
-    async def async_sync_room_trvs(self, room) -> None:
+    async def async_sync_room_trvs(self, room, force_max: bool = False) -> None:
         """Synchronize target temperature and mode to all TRVs configured for the room."""
         for trv_id in room.trv_ids:
             try:
-                if room.hvac_mode == "off":
+                if force_max:
+                    await self.hass.services.async_call(
+                        "climate",
+                        "set_temperature",
+                        {
+                            ATTR_ENTITY_ID: trv_id,
+                            ATTR_TEMPERATURE: room.max_temp,
+                        },
+                        blocking=False,
+                    )
+                    await self.hass.services.async_call(
+                        "climate",
+                        "set_hvac_mode",
+                        {
+                            ATTR_ENTITY_ID: trv_id,
+                            "hvac_mode": "heat",
+                        },
+                        blocking=False,
+                    )
+                elif room.hvac_mode == "off":
                     # Try setting off or minimum frost protection temperature
                     await self.hass.services.async_call(
                         "climate",
@@ -421,9 +445,17 @@ class ZonedThermostatCoordinator:
         sensor_id: Optional[str],
         min_temp: float,
         hysteresis: float,
+        overheat_temp: float = DEFAULT_BUFFER_OVERHEAT_TEMP,
+        overheat_hysteresis: float = DEFAULT_BUFFER_OVERHEAT_HYSTERESIS,
     ) -> None:
         """Public API: configure thermal storage / puffer temperature settings."""
-        self.system.configure_buffer(sensor_id, min_temp, hysteresis)
+        self.system.configure_buffer(
+            sensor_id=sensor_id,
+            min_temp=min_temp,
+            hysteresis=hysteresis,
+            overheat_temp=overheat_temp,
+            overheat_hysteresis=overheat_hysteresis,
+        )
         self._rebuild_tracked_entities()
         self._read_initial_states()
         self.system.event_log.record(
@@ -431,9 +463,21 @@ class ZonedThermostatCoordinator:
             entity_id=self.system.system_id,
             entity_name=self.system.name,
             event_type="buffer_settings_updated",
-            message=f"Impostazioni accumulo termico aggiornate: sensore={sensor_id or 'nessuno'}, min={min_temp}°C, isteresi={hysteresis}°C",
-            metadata={"sensor": sensor_id, "min_temp": min_temp, "hysteresis": hysteresis},
+            message=f"Impostazioni accumulo termico aggiornate: sensore={sensor_id or 'nessuno'}, min={min_temp}°C, isteresi={hysteresis}°C, sovratemp_sicurezza={overheat_temp}°C",
+            metadata={
+                "sensor": sensor_id,
+                "min_temp": min_temp,
+                "hysteresis": hysteresis,
+                "overheat_temp": overheat_temp,
+                "overheat_hysteresis": overheat_hysteresis,
+            },
         )
+        if hasattr(self.hass, "config_entries") and hasattr(self.storage, "entry_id"):
+            entry = self.hass.config_entries.async_get_entry(self.storage.entry_id)
+            if entry:
+                self.hass.config_entries.async_update_entry(
+                    entry, data=self.system.to_dict()
+                )
         await self.async_evaluate()
 
     async def async_clear_room_override(self, room_id: str) -> None:
