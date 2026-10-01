@@ -585,6 +585,7 @@ class ZonedThermostatPanel extends HTMLElement {
       <div class="nav-tabs">
         <button class="tab-btn ${this._activeTab === 'dashboard' ? 'active' : ''}" id="tab-dash">Panoramica & Zone</button>
         <button class="tab-btn ${this._activeTab === 'scheduler' ? 'active' : ''}" id="tab-sched">Pianificazione Settimanale</button>
+        <button class="tab-btn ${this._activeTab === 'config' ? 'active' : ''}" id="tab-config">⚙️ Configurazione & Entità</button>
         <button class="tab-btn ${this._activeTab === 'diagnostics' ? 'active' : ''}" id="tab-diag">Diagnostica & Timeline</button>
       </div>
 
@@ -592,6 +593,7 @@ class ZonedThermostatPanel extends HTMLElement {
       <div id="tab-content">
         ${this._activeTab === 'dashboard' ? this._renderDashboard(sys) : ''}
         ${this._activeTab === 'scheduler' ? this._renderScheduler(sys) : ''}
+        ${this._activeTab === 'config' ? this._renderConfiguration(sys) : ''}
         ${this._activeTab === 'diagnostics' ? this._renderDiagnostics(sys) : ''}
       </div>
     `;
@@ -811,15 +813,67 @@ class ZonedThermostatPanel extends HTMLElement {
     `;
   }
 
+  _renderConfiguration(sys) {
+    const zones = Object.values(sys.zones || {});
+    return `
+      <div style="display: flex; flex-direction: column; gap: 24px;">
+        <div style="background: rgba(3, 169, 244, 0.1); border: 1px solid rgba(3, 169, 244, 0.3); border-radius: 12px; padding: 18px 22px;">
+          <h3 style="margin: 0 0 8px 0; color: var(--primary-color, #03a9f4); font-size: 1.15rem;">🛠️ Configurazione & Gestione Entità</h3>
+          <p style="margin: 0; line-height: 1.6; font-size: 0.95rem;">
+            Tutti i sensori di temperatura, le valvole termostatiche (TRV), gli switch delle pompe e le zone possono essere modificati in qualsiasi momento.
+            <br/>Per modificare un'entità, aggiungere o eliminare stanze/zone:
+            <br/>Vai in <strong>Impostazioni &rarr; Dispositivi e Servizi &rarr; Zoned Heating Thermostat &rarr; CONFIGURA</strong>.
+          </p>
+        </div>
+
+        <div class="zones-grid">
+          ${zones.map(z => `
+            <div class="zone-card">
+              <div class="zone-header">
+                <h3 class="zone-title" style="font-size: 1.3rem;">Zona: ${z.name}</h3>
+                <span class="badge-status badge-idle">ID: ${z.zone_id}</span>
+              </div>
+
+              <div style="font-size: 0.88rem; line-height: 1.6; margin-bottom: 18px; background: rgba(0,0,0,0.25); padding: 14px; border-radius: 8px;">
+                <div><strong>Pompa associata:</strong> <code>${z.pump ? z.pump.pump_switch_id : 'N/D'}</code></div>
+                <div><strong>Protezione Min ON / Min OFF:</strong> ${z.pump ? z.pump.min_on_time : 120}s / ${z.pump ? z.pump.min_off_time : 120}s</div>
+                <div><strong>Ritardo Avvio / Spegnimento:</strong> ${z.pump ? z.pump.startup_delay : 15}s / ${z.pump ? z.pump.shutdown_delay : 30}s</div>
+              </div>
+
+              <h4 style="margin: 12px 0 10px 0; font-size: 1.05rem;">Stanze Configurate (${Object.keys(z.rooms || {}).length}):</h4>
+              <div style="display: flex; flex-direction: column; gap: 12px;">
+                ${Object.values(z.rooms || {}).map(r => `
+                  <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 14px;">
+                    <div style="display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 8px;">
+                      <span style="font-size: 1.05rem;">🏠 ${r.name}</span>
+                      <span style="font-size: 0.8rem; color: #888;">ID: ${r.room_id}</span>
+                    </div>
+                    <div style="font-size: 0.85rem; line-height: 1.6; color: #ccc;">
+                      <div>• <strong>Sensore Temperatura:</strong> <code>${(r.temp_sensor_ids && r.temp_sensor_ids.length > 0) ? r.temp_sensor_ids.join(', ') : 'Nessun sensore'}</code></div>
+                      <div>• <strong>Valvole TRV:</strong> <code>${(r.trv_ids && r.trv_ids.length > 0) ? r.trv_ids.join(', ') : 'Nessuna valvola'}</code></div>
+                      <div>• <strong>Sensore Finestra:</strong> <code>${r.window_sensor_id || 'Nessuno'}</code></div>
+                      <div>• <strong>Isteresi:</strong> &plusmn;${r.hysteresis}&deg;C | <strong>Range:</strong> ${r.min_temp}&deg;C - ${r.max_temp}&deg;C</div>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
   _bindEvents() {
     const root = this.shadowRoot;
 
-    // Tabs
     const tabDash = root.getElementById("tab-dash");
     const tabSched = root.getElementById("tab-sched");
+    const tabConfig = root.getElementById("tab-config");
     const tabDiag = root.getElementById("tab-diag");
     if (tabDash) tabDash.onclick = () => { this._activeTab = "dashboard"; this._render(); };
     if (tabSched) tabSched.onclick = () => { this._activeTab = "scheduler"; this._render(); };
+    if (tabConfig) tabConfig.onclick = () => { this._activeTab = "config"; this._render(); };
     if (tabDiag) tabDiag.onclick = () => { this._activeTab = "diagnostics"; this._render(); };
 
     // Modes

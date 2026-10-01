@@ -4,14 +4,53 @@ import logging
 from typing import Any, Dict, List, Optional
 import uuid
 
-import voluptuous as vol
+try:
+    import voluptuous as vol
+    from homeassistant import config_entries
+    from homeassistant.components.climate import DOMAIN as CLIMATE_DOMAIN
+    from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
+    from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
+    from homeassistant.core import callback
+    from homeassistant.helpers import selector
+except ImportError:
+    import unittest.mock as mock
 
-from homeassistant import config_entries
-from homeassistant.components.climate import DOMAIN as CLIMATE_DOMAIN
-from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
-from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
-from homeassistant.core import callback
-from homeassistant.helpers import selector
+    vol = mock.MagicMock()  # type: ignore
+
+    class _ConfigFlow:
+        def __init_subclass__(cls, **kwargs):
+            pass
+
+        def async_show_form(self, **kwargs):
+            return {"type": "form", **kwargs}
+
+        def async_show_menu(self, **kwargs):
+            return {"type": "menu", **kwargs}
+
+        def async_create_entry(self, **kwargs):
+            return {"type": "create_entry", **kwargs}
+
+    class _OptionsFlow:
+        def async_show_form(self, **kwargs):
+            return {"type": "form", **kwargs}
+
+        def async_show_menu(self, **kwargs):
+            return {"type": "menu", **kwargs}
+
+        def async_create_entry(self, **kwargs):
+            return {"type": "create_entry", **kwargs}
+
+    config_entries = mock.MagicMock()  # type: ignore
+    config_entries.ConfigFlow = _ConfigFlow
+    config_entries.OptionsFlow = _OptionsFlow
+    CLIMATE_DOMAIN = "climate"
+    SENSOR_DOMAIN = "sensor"
+    SWITCH_DOMAIN = "switch"
+
+    def callback(fn):  # type: ignore
+        return fn
+
+    selector = mock.MagicMock()  # type: ignore
 
 from .const import (
     DEFAULT_HYSTERESIS,
@@ -330,16 +369,467 @@ class ZonedThermostatConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class ZonedThermostatOptionsFlow(config_entries.OptionsFlow):
-    """Handle options flow to modify timings, hysteresis, and presets."""
+    """Handle rich options flow to inspect, modify, add and remove rooms, zones, sensors, and pumps."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize options flow."""
         self._config_entry = config_entry
+        self._selected_room_id: Optional[str] = None
+        self._selected_zone_id: Optional[str] = None
+
+    def _get_system(self) -> HeatingSystem:
+        """Get the live heating system from coordinator or reconstruct from entry data."""
+        entry_id = self._config_entry.entry_id
+        domain_data = self.hass.data.get(DOMAIN, {}).get(entry_id, {})
+        coordinator = domain_data.get("coordinator")
+        if coordinator and coordinator.system:
+            return coordinator.system
+        return HeatingSystem.from_dict(self._config_entry.data)
+
+    async def _async_save_and_reload(self, system: HeatingSystem) -> None:
+        """Save updated system to storage and config entry data, then reload."""
+        entry_id = self._config_entry.entry_id
+        domain_data = self.hass.data.get(DOMAIN, {}).get(entry_id, {})
+
+        storage = domain_data.get("storage")
+        if storage:
+            await storage.async_save(system)
+
+        self.hass.config_entries.async_update_entry(
+            self._config_entry, data=system.to_dict()
+        )
+
+        coordinator = domain_data.get("coordinator")
+        if coordinator:
+            coordinator._rebuild_tracked_entities()
+            coordinator._read_initial_states()
+            await coordinator.async_evaluate()
+
+        await self.hass.config_entries.async_reload(entry_id)
 
     async def async_step_init(
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> config_entries.ConfigFlowResult:
-        """Manage global and advanced options."""
+        """Main options menu."""
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=[
+                "view_config",
+                "edit_room",
+                "edit_zone",
+                "add_room",
+                "remove_room",
+                "add_zone",
+                "remove_zone",
+                "advanced_options",
+            ],
+        )
+
+    async def async_step_view_config(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> config_entries.ConfigFlowResult:
+        """Display read-only comprehensive summary of the current setup."""
+        if user_input is not None:
+            return await self.async_step_init()
+
+        system = self._get_system()
+        lines: List[str] = [f"### Impianto: {system.name}\n"]
+
+        for zone in system.zones.values():
+            pump_id = zone.pump_controller.pump_switch_id or "Nessuna pompa"
+            lines.append(f"**Zona: {zone.name}**")
+            lines.append(f"- Pompa: `{pump_id}` (stato fisico: {'ON' if zone.pump_controller.is_physically_on else 'OFF'})")
+            lines.append(
+                f"- Tempi Pompa: Min ON {zone.pump_controller.min_on_time}s | Min OFF {zone.pump_controller.min_off_time}s | Avvio {zone.pump_controller.startup_delay}s | Stop {zone.pump_controller.shutdown_delay}s"
+            )
+            lines.append("- Stanze collegate:")
+            if not zone.rooms:
+                lines.append("  *(Nessuna stanza configurata per questa zona)*")
+            for room in zone.rooms.values():
+                s_str = ", ".join(f"`{s}`" for s in room.temp_sensor_ids) if room.temp_sensor_ids else "Nessun sensore"
+                t_str = ", ".join(f"`{t}`" for t in room.trv_ids) if room.trv_ids else "Nessuna valvola"
+                w_str = f"`{room.window_sensor_id}`" if room.window_sensor_id else "Nessun sensore"
+                lines.append(f"  • **{room.name}** (Target: {room.target_temp}°C, Isteresi: ±{room.hysteresis}°C):")
+                lines.append(f"    - Temp: {s_str}")
+                lines.append(f"    - TRV: {t_str}")
+                lines.append(f"    - Finestra: {w_str}")
+            lines.append("")
+
+        summary_text = "\n".join(lines)
+        return self.async_show_form(
+            step_id="view_config",
+            data_schema=vol.Schema({}),
+            description_placeholders={"summary": summary_text},
+        )
+
+    async def async_step_edit_room(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> config_entries.ConfigFlowResult:
+        """Select which room to edit."""
+        system = self._get_system()
+        rooms = system.all_rooms()
+
+        if not rooms:
+            return self.async_show_form(
+                step_id="edit_room",
+                data_schema=vol.Schema({}),
+                errors={"base": "no_rooms_defined"},
+            )
+
+        if user_input is not None:
+            self._selected_room_id = user_input["room_id"]
+            return await self.async_step_edit_room_form()
+
+        room_options = {
+            r.room_id: f"{r.name} ({system.get_zone(r.zone_id).name if system.get_zone(r.zone_id) else r.zone_id})"
+            for r in rooms
+        }
+
+        return self.async_show_form(
+            step_id="edit_room",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("room_id"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                {"value": k, "label": v}
+                                for k, v in room_options.items()
+                            ]
+                        )
+                    )
+                }
+            ),
+        )
+
+    async def async_step_edit_room_form(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> config_entries.ConfigFlowResult:
+        """Edit sensors, TRVs, and hysteresis for selected room."""
+        system = self._get_system()
+        room = system.get_room(self._selected_room_id)
+
+        if not room:
+            return await self.async_step_init()
+
+        if user_input is not None:
+            room.temp_sensor_ids = (
+                [user_input["temp_sensor"]] if user_input.get("temp_sensor") else []
+            )
+            room.trv_ids = user_input.get("trvs", [])
+            room.window_sensor_id = user_input.get("window_sensor")
+            room.hysteresis = float(user_input.get("hysteresis", room.hysteresis))
+            await self._async_save_and_reload(system)
+            return self.async_create_entry(title="", data={})
+
+        curr_sensor = room.temp_sensor_ids[0] if room.temp_sensor_ids else None
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    "temp_sensor",
+                    default=curr_sensor or vol.UNDEFINED,
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=SENSOR_DOMAIN)
+                ),
+                vol.Optional(
+                    "trvs",
+                    default=room.trv_ids,
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain=CLIMATE_DOMAIN, multiple=True
+                    )
+                ),
+                vol.Optional(
+                    "window_sensor",
+                    default=room.window_sensor_id or vol.UNDEFINED,
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="binary_sensor")
+                ),
+                vol.Required(
+                    "hysteresis",
+                    default=room.hysteresis,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0.1, max=2.0, step=0.05, unit_of_measurement="°C"
+                    )
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="edit_room_form",
+            data_schema=schema,
+            description_placeholders={"room_name": room.name},
+        )
+
+    async def async_step_edit_zone(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> config_entries.ConfigFlowResult:
+        """Select which zone to edit."""
+        system = self._get_system()
+        if not system.zones:
+            return self.async_show_form(
+                step_id="edit_zone",
+                data_schema=vol.Schema({}),
+                errors={"base": "no_zones_defined"},
+            )
+
+        if user_input is not None:
+            self._selected_zone_id = user_input["zone_id"]
+            return await self.async_step_edit_zone_form()
+
+        zone_options = {z.zone_id: z.name for z in system.zones.values()}
+        return self.async_show_form(
+            step_id="edit_zone",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("zone_id"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                {"value": k, "label": v}
+                                for k, v in zone_options.items()
+                            ]
+                        )
+                    )
+                }
+            ),
+        )
+
+    async def async_step_edit_zone_form(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> config_entries.ConfigFlowResult:
+        """Edit pump switch and timing delays for selected zone."""
+        system = self._get_system()
+        zone = system.get_zone(self._selected_zone_id)
+
+        if not zone:
+            return await self.async_step_init()
+
+        if user_input is not None:
+            zone.pump_controller.pump_switch_id = user_input["pump_switch"]
+            zone.pump_controller.min_on_time = int(user_input["min_pump_on_time"])
+            zone.pump_controller.min_off_time = int(user_input["min_pump_off_time"])
+            zone.pump_controller.startup_delay = int(user_input["startup_delay"])
+            zone.pump_controller.shutdown_delay = int(user_input["shutdown_delay"])
+            await self._async_save_and_reload(system)
+            return self.async_create_entry(title="", data={})
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    "pump_switch",
+                    default=zone.pump_controller.pump_switch_id or vol.UNDEFINED,
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=SWITCH_DOMAIN)
+                ),
+                vol.Required(
+                    "min_pump_on_time",
+                    default=zone.pump_controller.min_on_time,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=30, max=600, step=10, unit_of_measurement="s"
+                    )
+                ),
+                vol.Required(
+                    "min_pump_off_time",
+                    default=zone.pump_controller.min_off_time,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=30, max=600, step=10, unit_of_measurement="s"
+                    )
+                ),
+                vol.Required(
+                    "startup_delay",
+                    default=zone.pump_controller.startup_delay,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=120, step=5, unit_of_measurement="s"
+                    )
+                ),
+                vol.Required(
+                    "shutdown_delay",
+                    default=zone.pump_controller.shutdown_delay,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=300, step=5, unit_of_measurement="s"
+                    )
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="edit_zone_form",
+            data_schema=schema,
+            description_placeholders={"zone_name": zone.name},
+        )
+
+    async def async_step_add_room(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> config_entries.ConfigFlowResult:
+        """Add a new room to an existing zone."""
+        system = self._get_system()
+        errors: Dict[str, str] = {}
+
+        if user_input is not None:
+            zone = system.get_zone(user_input["zone_id"])
+            if zone:
+                from .core.room import HeatingRoom
+
+                room_name = user_input["name"].strip()
+                new_room = HeatingRoom(
+                    room_id=_slugify(room_name),
+                    name=room_name,
+                    zone_id=zone.zone_id,
+                    temp_sensor_ids=[user_input["temp_sensor"]] if user_input.get("temp_sensor") else [],
+                    trv_ids=user_input.get("trvs", []),
+                    window_sensor_id=user_input.get("window_sensor"),
+                    hysteresis=float(user_input.get("hysteresis", DEFAULT_HYSTERESIS)),
+                )
+                zone.add_room(new_room)
+                await self._async_save_and_reload(system)
+                return self.async_create_entry(title="", data={})
+
+        zone_options = [
+            {"value": z.zone_id, "label": z.name}
+            for z in system.zones.values()
+        ]
+
+        schema = vol.Schema(
+            {
+                vol.Required("zone_id"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=zone_options)
+                ),
+                vol.Required("name"): str,
+                vol.Required("temp_sensor"): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=SENSOR_DOMAIN)
+                ),
+                vol.Optional("trvs", default=[]): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain=CLIMATE_DOMAIN, multiple=True
+                    )
+                ),
+                vol.Optional("window_sensor"): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="binary_sensor")
+                ),
+                vol.Required("hysteresis", default=DEFAULT_HYSTERESIS): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0.1, max=2.0, step=0.05, unit_of_measurement="°C"
+                    )
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="add_room", data_schema=schema, errors=errors
+        )
+
+    async def async_step_remove_room(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> config_entries.ConfigFlowResult:
+        """Remove a room from the system."""
+        system = self._get_system()
+        rooms = system.all_rooms()
+
+        if not rooms:
+            return self.async_show_form(
+                step_id="remove_room",
+                data_schema=vol.Schema({}),
+                errors={"base": "no_rooms_defined"},
+            )
+
+        if user_input is not None:
+            r_id = user_input["room_id"]
+            for zone in system.zones.values():
+                if r_id in zone.rooms:
+                    zone.remove_room(r_id)
+                    break
+            await self._async_save_and_reload(system)
+            return self.async_create_entry(title="", data={})
+
+        room_options = [
+            {
+                "value": r.room_id,
+                "label": f"{r.name} ({system.get_zone(r.zone_id).name if system.get_zone(r.zone_id) else r.zone_id})",
+            }
+            for r in rooms
+        ]
+
+        return self.async_show_form(
+            step_id="remove_room",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("room_id"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=room_options)
+                    )
+                }
+            ),
+        )
+
+    async def async_step_add_zone(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> config_entries.ConfigFlowResult:
+        """Add a new zone with its pump switch."""
+        system = self._get_system()
+
+        if user_input is not None:
+            from .core.zone import HeatingZone
+
+            z_name = user_input["name"].strip()
+            new_zone = HeatingZone(
+                zone_id=_slugify(z_name),
+                name=z_name,
+                pump_switch_id=user_input["pump_switch"],
+                min_pump_on=DEFAULT_PUMP_MIN_ON_TIME,
+                min_pump_off=DEFAULT_PUMP_MIN_OFF_TIME,
+                startup_delay=DEFAULT_PUMP_STARTUP_DELAY,
+                shutdown_delay=DEFAULT_PUMP_SHUTDOWN_DELAY,
+            )
+            system.add_zone(new_zone)
+            await self._async_save_and_reload(system)
+            return self.async_create_entry(title="", data={})
+
+        schema = vol.Schema(
+            {
+                vol.Required("name"): str,
+                vol.Required("pump_switch"): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=SWITCH_DOMAIN)
+                ),
+            }
+        )
+
+        return self.async_show_form(step_id="add_zone", data_schema=schema)
+
+    async def async_step_remove_zone(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> config_entries.ConfigFlowResult:
+        """Remove an entire zone."""
+        system = self._get_system()
+
+        if user_input is not None:
+            z_id = user_input["zone_id"]
+            system.zones.pop(z_id, None)
+            await self._async_save_and_reload(system)
+            return self.async_create_entry(title="", data={})
+
+        zone_options = [
+            {"value": z.zone_id, "label": z.name}
+            for z in system.zones.values()
+        ]
+
+        return self.async_show_form(
+            step_id="remove_zone",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("zone_id"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=zone_options)
+                    )
+                }
+            ),
+        )
+
+    async def async_step_advanced_options(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> config_entries.ConfigFlowResult:
+        """Manage global timings and hysteresis options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
@@ -398,4 +888,4 @@ class ZonedThermostatOptionsFlow(config_entries.OptionsFlow):
             }
         )
 
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="advanced_options", data_schema=schema)

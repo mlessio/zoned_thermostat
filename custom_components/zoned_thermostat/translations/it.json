@@ -52,13 +52,98 @@
   "options": {
     "step": {
       "init": {
-        "title": "Parametri Avanzati di Riscaldamento",
+        "title": "Configurazione Impianto & Zone",
+        "description": "Seleziona un'operazione per visualizzare o modificare l'impianto:",
+        "menu_options": {
+          "view_config": "📋 Visualizza configurazione impianto",
+          "edit_room": "✏️ Modifica una stanza (sensori e TRV)",
+          "edit_zone": "⚙️ Modifica una zona e la sua pompa",
+          "add_room": "➕ Aggiungi una nuova stanza",
+          "remove_room": "🗑️ Rimuovi una stanza",
+          "add_zone": "➕ Aggiungi una nuova zona",
+          "remove_zone": "🗑️ Rimuovi una zona",
+          "advanced_options": "⏱️ Parametri globali e protezioni pompa"
+        }
+      },
+      "view_config": {
+        "title": "Riepilogo Configurazione Corrente",
+        "description": "{summary}"
+      },
+      "edit_room": {
+        "title": "Seleziona la Stanza da Modificare",
         "data": {
-          "default_hysteresis": "Isteresi Termica (°C)",
+          "room_id": "Stanza"
+        }
+      },
+      "edit_room_form": {
+        "title": "Modifica Stanza: {room_name}",
+        "description": "Aggiorna il sensore di temperatura ambiente, le TRV collegate, il sensore finestra o l'isteresi.",
+        "data": {
+          "temp_sensor": "Sensore Temperatura Ambiente",
+          "trvs": "Valvole Termostatiche (TRV)",
+          "window_sensor": "Sensore Finestra (opzionale)",
+          "hysteresis": "Isteresi Termica (°C)"
+        }
+      },
+      "edit_zone": {
+        "title": "Seleziona la Zona da Modificare",
+        "data": {
+          "zone_id": "Zona"
+        }
+      },
+      "edit_zone_form": {
+        "title": "Modifica Zona: {zone_name}",
+        "description": "Modifica lo switch della pompa di circolazione e i tempi anti short-cycle.",
+        "data": {
+          "pump_switch": "Interruttore Pompa di Circolazione",
           "min_pump_on_time": "Tempo Minimo Pompa Accesa (secondi)",
           "min_pump_off_time": "Tempo Minimo Pompa Spenta (secondi)",
           "startup_delay": "Ritardo Avvio Pompa (secondi, attesa apertura TRV)",
           "shutdown_delay": "Ritardo Spegnimento Pompa (secondi, post-circolazione)"
+        }
+      },
+      "add_room": {
+        "title": "Aggiungi Nuova Stanza",
+        "description": "Inserisci i parametri della nuova stanza da aggiungere all'impianto.",
+        "data": {
+          "zone_id": "Zona di Appartenenza",
+          "name": "Nome Stanza",
+          "temp_sensor": "Sensore Temperatura Ambiente",
+          "trvs": "Valvole Termostatiche (TRV)",
+          "window_sensor": "Sensore Finestra (opzionale)",
+          "hysteresis": "Isteresi Termica (°C)"
+        }
+      },
+      "remove_room": {
+        "title": "Rimuovi una Stanza",
+        "description": "Attenzione: la rimozione cancellerà la stanza selezionata e il suo cronoprogramma.",
+        "data": {
+          "room_id": "Stanza da Rimuovere"
+        }
+      },
+      "add_zone": {
+        "title": "Aggiungi Nuova Zona",
+        "description": "Crea una nuova zona e assegna il relativo interruttore pompa.",
+        "data": {
+          "name": "Nome della Zona",
+          "pump_switch": "Interruttore Pompa di Circolazione"
+        }
+      },
+      "remove_zone": {
+        "title": "Rimuovi una Zona",
+        "description": "Attenzione: la rimozione della zona eliminerà anche tutte le stanze in essa contenute.",
+        "data": {
+          "zone_id": "Zona da Rimuovere"
+        }
+      },
+      "advanced_options": {
+        "title": "Parametri Globali e Protezioni Pompa",
+        "data": {
+          "default_hysteresis": "Isteresi Termica Predefinita (°C)",
+          "min_pump_on_time": "Tempo Minimo Pompa Accesa (secondi)",
+          "min_pump_off_time": "Tempo Minimo Pompa Spenta (secondi)",
+          "startup_delay": "Ritardo Avvio Pompa (secondi)",
+          "shutdown_delay": "Ritardo Spegnimento Pompa (secondi)"
         }
       }
     }

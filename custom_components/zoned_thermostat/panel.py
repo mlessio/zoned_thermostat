@@ -25,31 +25,39 @@ async def async_register_panel(hass: HomeAssistant) -> None:
     frontend_dir = Path(__file__).parent / "frontend"
 
     # 1. Register static directory for frontend JavaScript
-    await hass.http.async_register_static_paths([
-        hass.http.StaticPath(
-            PANEL_STATIC_PATH,
-            str(frontend_dir),
-            cache_headers=False,
-        )
-    ]) if hasattr(hass.http, "async_register_static_paths") else hass.http.register_static_path(
-        PANEL_STATIC_PATH, str(frontend_dir), cache_headers=False
-    )
+    try:
+        if hasattr(hass.http, "async_register_static_paths"):
+            from homeassistant.components.http import StaticPath
+            await hass.http.async_register_static_paths([
+                StaticPath(
+                    PANEL_STATIC_PATH,
+                    str(frontend_dir),
+                    cache_headers=False,
+                )
+            ])
+        elif hasattr(hass.http, "register_static_path"):
+            hass.http.register_static_path(
+                PANEL_STATIC_PATH, str(frontend_dir), cache_headers=False
+            )
+    except Exception as err:
+        _LOGGER.debug("Static path registration notice: %s", err)
 
     # 2. Register panel in sidebar
     try:
-        frontend.async_register_built_in_panel(
-            hass,
-            component_name="custom",
-            sidebar_title=PANEL_TITLE,
-            sidebar_icon=PANEL_ICON,
-            frontend_url_path=PANEL_URL,
-            config={
-                "_panel_type": "zoned-thermostat-panel",
-                "module_url": f"{PANEL_STATIC_PATH}/zoned-thermostat-panel.js",
-            },
-            require_admin=False,
-        )
-        _LOGGER.info("Registered Zoned Thermostat sidebar panel at /%s", PANEL_URL)
+        if frontend:
+            frontend.async_register_built_in_panel(
+                hass,
+                component_name="custom",
+                sidebar_title=PANEL_TITLE,
+                sidebar_icon=PANEL_ICON,
+                frontend_url_path=PANEL_URL,
+                config={
+                    "_panel_type": "zoned-thermostat-panel",
+                    "module_url": f"{PANEL_STATIC_PATH}/zoned-thermostat-panel.js",
+                },
+                require_admin=False,
+            )
+            _LOGGER.info("Registered Zoned Thermostat sidebar panel at /%s", PANEL_URL)
     except Exception as err:
         _LOGGER.warning("Could not register sidebar panel: %s", err)
 

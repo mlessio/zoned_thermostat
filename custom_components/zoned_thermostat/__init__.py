@@ -32,6 +32,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Zoned Heating Thermostat from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
+    # Register WebSocket API endpoints for the dedicated frontend panel
+    if "_ws_registered" not in hass.data[DOMAIN]:
+        async_register_websocket_commands(hass)
+        hass.data[DOMAIN]["_ws_registered"] = True
+
     storage = ZonedThermostatStorage(hass, entry.entry_id)
 
     # 1. Load persisted system or construct from entry config

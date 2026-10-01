@@ -52,13 +52,98 @@
   "options": {
     "step": {
       "init": {
-        "title": "Advanced Heating Parameters",
+        "title": "System & Zones Configuration",
+        "description": "Select an action to inspect or modify the heating system:",
+        "menu_options": {
+          "view_config": "📋 View current configuration",
+          "edit_room": "✏️ Edit a room (sensors & TRVs)",
+          "edit_zone": "⚙️ Edit a zone and its pump",
+          "add_room": "➕ Add a new room",
+          "remove_room": "🗑️ Remove a room",
+          "add_zone": "➕ Add a new zone",
+          "remove_zone": "🗑️ Remove a zone",
+          "advanced_options": "⏱️ Global timings & pump protections"
+        }
+      },
+      "view_config": {
+        "title": "Current Configuration Summary",
+        "description": "{summary}"
+      },
+      "edit_room": {
+        "title": "Select Room to Edit",
         "data": {
-          "default_hysteresis": "Thermal Hysteresis (°C)",
+          "room_id": "Room"
+        }
+      },
+      "edit_room_form": {
+        "title": "Edit Room: {room_name}",
+        "description": "Update temperature sensor, associated TRVs, window sensor, or hysteresis.",
+        "data": {
+          "temp_sensor": "Room Temperature Sensor",
+          "trvs": "Thermostatic Radiator Valves (TRVs)",
+          "window_sensor": "Window Sensor (optional)",
+          "hysteresis": "Thermal Hysteresis (°C)"
+        }
+      },
+      "edit_zone": {
+        "title": "Select Zone to Edit",
+        "data": {
+          "zone_id": "Zone"
+        }
+      },
+      "edit_zone_form": {
+        "title": "Edit Zone: {zone_name}",
+        "description": "Update circulation pump switch and anti-short-cycle delays.",
+        "data": {
+          "pump_switch": "Circulation Pump Switch",
           "min_pump_on_time": "Minimum Pump ON Time (seconds)",
           "min_pump_off_time": "Minimum Pump OFF Time (seconds)",
           "startup_delay": "Pump Startup Delay (seconds, waits for TRV to open)",
           "shutdown_delay": "Pump Shutdown Delay (seconds, post-circulation)"
+        }
+      },
+      "add_room": {
+        "title": "Add New Room",
+        "description": "Enter parameters for the new room.",
+        "data": {
+          "zone_id": "Zone",
+          "name": "Room Name",
+          "temp_sensor": "Room Temperature Sensor",
+          "trvs": "Thermostatic Radiator Valves (TRVs)",
+          "window_sensor": "Window Sensor (optional)",
+          "hysteresis": "Thermal Hysteresis (°C)"
+        }
+      },
+      "remove_room": {
+        "title": "Remove a Room",
+        "description": "Warning: this will delete the selected room and its weekly schedule.",
+        "data": {
+          "room_id": "Room to Remove"
+        }
+      },
+      "add_zone": {
+        "title": "Add New Zone",
+        "description": "Create a new zone and assign its circulation pump switch.",
+        "data": {
+          "name": "Zone Name",
+          "pump_switch": "Circulation Pump Switch"
+        }
+      },
+      "remove_zone": {
+        "title": "Remove a Zone",
+        "description": "Warning: removing a zone will also remove all rooms within it.",
+        "data": {
+          "zone_id": "Zone to Remove"
+        }
+      },
+      "advanced_options": {
+        "title": "Global Timings & Pump Protections",
+        "data": {
+          "default_hysteresis": "Default Thermal Hysteresis (°C)",
+          "min_pump_on_time": "Minimum Pump ON Time (seconds)",
+          "min_pump_off_time": "Minimum Pump OFF Time (seconds)",
+          "startup_delay": "Pump Startup Delay (seconds)",
+          "shutdown_delay": "Pump Shutdown Delay (seconds)"
         }
       }
     }
