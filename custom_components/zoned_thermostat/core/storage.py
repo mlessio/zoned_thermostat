@@ -19,19 +19,15 @@ class ZonedThermostatStorage:
         self._store = None
         self._key = f"{STORAGE_KEY}_{entry_id}"
 
-        # Lazy import of HA Store helper to allow standalone testing
+        # Initialize Home Assistant Store helper
         try:
             from homeassistant.helpers.storage import Store
 
-            self._store = Store(
-                hass,
-                STORAGE_VERSION,
-                self._key,
-                delay_save=SAVE_DELAY,
-            )
-        except ImportError:
+            self._store = Store(hass, STORAGE_VERSION, self._key)
+        except Exception as err:
             _LOGGER.debug(
-                "Home Assistant Store helper not available in environment; using in-memory mock."
+                "Home Assistant Store helper init notice: %s; using in-memory mock.",
+                err,
             )
             self._store = None
         self._in_memory_data: Optional[Dict[str, Any]] = None
@@ -40,7 +36,11 @@ class ZonedThermostatStorage:
         """Load persisted system data and reconstruct HeatingSystem."""
         raw_data: Optional[Dict[str, Any]] = None
         if self._store:
-            raw_data = await self._store.async_load()
+            try:
+                raw_data = await self._store.async_load()
+            except Exception as err:
+                _LOGGER.error("Failed to load from Home Assistant store: %s", err)
+                raw_data = None
         else:
             raw_data = self._in_memory_data
 
@@ -61,6 +61,12 @@ class ZonedThermostatStorage:
         """Serialize and save HeatingSystem to disk."""
         data = system.to_dict()
         if self._store:
-            await self._store.async_save(data)
+            try:
+                if hasattr(self._store, "async_delay_save"):
+                    self._store.async_delay_save(lambda: data, delay=SAVE_DELAY)
+                else:
+                    await self._store.async_save(data)
+            except Exception as err:
+                _LOGGER.error("Failed to save to Home Assistant store: %s", err)
         else:
             self._in_memory_data = data

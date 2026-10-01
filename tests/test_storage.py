@@ -87,5 +87,22 @@ class TestStorage(unittest.TestCase):
         self.assertEqual(restored_room.manual_override.target_temp, 22.5)
 
 
+    def test_store_init_without_delay_save_kwarg(self):
+        """Verify Store is instantiated with only (hass, version, key) as expected by Home Assistant."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_store_cls = MagicMock()
+        mock_store_inst = MagicMock()
+        mock_store_cls.return_value = mock_store_inst
+        mock_store_inst.async_load = AsyncMock(return_value=None)
+
+        with patch.dict(
+            "sys.modules", {"homeassistant.helpers.storage": MagicMock(Store=mock_store_cls)}
+        ):
+            mock_hass = MagicMock()
+            storage = ZonedThermostatStorage(hass=mock_hass, entry_id="test_entry_456")
+            mock_store_cls.assert_called_once_with(mock_hass, 1, "zoned_thermostat.storage_test_entry_456")
+
+
 if __name__ == "__main__":
     unittest.main()
