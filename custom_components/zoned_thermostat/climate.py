@@ -74,7 +74,6 @@ class ZonedRoomClimate(ClimateEntity):
             name=self.room.name,
             manufacturer="Zoned Thermostat",
             model="Logical Room Thermostat",
-            via_device=(DOMAIN, f"zone_{self.room.zone_id}"),
         )
 
     async def async_added_to_hass(self) -> None:

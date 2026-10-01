@@ -27,12 +27,11 @@ _LOGGER = logging.getLogger(__name__)
 def _get_coordinator(hass: HomeAssistant, entry_id: str) -> ZonedThermostatCoordinator:
     """Helper to retrieve coordinator from entry_id or default."""
     domain_data = hass.data.get(DOMAIN, {})
-    if entry_id and entry_id in domain_data:
+    if entry_id and entry_id in domain_data and isinstance(domain_data[entry_id], dict):
         return domain_data[entry_id]["coordinator"]
-    if domain_data:
-        # Return first available coordinator
-        first_entry = next(iter(domain_data.values()))
-        return first_entry["coordinator"]
+    for val in domain_data.values():
+        if isinstance(val, dict) and "coordinator" in val:
+            return val["coordinator"]
     raise websocket_api.HomeAssistantError("Zoned Heating Thermostat is not loaded.")
 
 

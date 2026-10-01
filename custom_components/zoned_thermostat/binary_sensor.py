@@ -121,7 +121,6 @@ class ZonedZoneDemandBinarySensor(BinarySensorEntity):
             name=self.zone.name,
             manufacturer="Zoned Thermostat",
             model="Zone Aggregator",
-            via_device=(DOMAIN, f"system_{self.coordinator.system.system_id}"),
         )
 
     async def async_added_to_hass(self) -> None:
@@ -181,7 +180,6 @@ class ZonedRoomDemandBinarySensor(BinarySensorEntity):
             name=self.room.name,
             manufacturer="Zoned Thermostat",
             model="Logical Room Thermostat",
-            via_device=(DOMAIN, f"zone_{self.room.zone_id}"),
         )
 
     async def async_added_to_hass(self) -> None:
