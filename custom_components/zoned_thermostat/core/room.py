@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..const import DEFAULT_PRESETS
 from .enums import GlobalMode, OverrideMode, PresetMode, RoomState, SensorAggregation
 from .hysteresis import calculate_heat_demand
 from .schedule import (
@@ -163,6 +164,7 @@ class HeatingRoom:
         now: Optional[float] = None,
         current_day: Optional[str] = None,
         current_time: Optional[str] = None,
+        preset_name: Optional[str] = None,
     ) -> None:
         """Set a manual temperature override on the room."""
         t = now if now is not None else time.time()
@@ -185,7 +187,9 @@ class HeatingRoom:
             duration_minutes=duration_minutes,
             expires_at_timestamp=expires_at,
             set_block_end_minutes=block_end_min,
+            preset_name=preset_name,
         )
+        self.active_preset = preset_name
 
     def clear_manual_override(self) -> None:
         """Cancel any active manual override and return to schedule."""
@@ -232,7 +236,7 @@ class HeatingRoom:
                 self.manual_override = None
             else:
                 self.target_temp = self.manual_override.target_temp
-                self.active_preset = None
+                self.active_preset = self.manual_override.preset_name
                 return self.target_temp
 
         # 3. Schedule
@@ -326,7 +330,22 @@ class HeatingRoom:
 
         return (demand, self.status_reason, details)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def set_room_preset(self, preset_name: str, value: float) -> None:
+        """Set an independent preset temperature override for this room."""
+        self.presets_override[preset_name.lower().strip()] = round(value, 1)
+
+    def get_effective_presets(
+        self, global_presets: Optional[Dict[str, float]] = None
+    ) -> Dict[str, float]:
+        """Compute the active preset temperatures for this room, combining globals and overrides."""
+        base = dict(DEFAULT_PRESETS)
+        if global_presets:
+            base.update(global_presets)
+        return {**base, **self.presets_override}
+
+    def to_dict(
+        self, global_presets: Optional[Dict[str, float]] = None
+    ) -> Dict[str, Any]:
         """Serialize room for persistence and UI."""
         return {
             "room_id": self.room_id,
@@ -343,6 +362,7 @@ class HeatingRoom:
             "temp_step": self.temp_step,
             "hysteresis": self.hysteresis,
             "presets_override": self.presets_override,
+            "effective_presets": self.get_effective_presets(global_presets),
             "schedule": self.schedule.to_dict(),
             "manual_override": (
                 self.manual_override.to_dict() if self.manual_override else None

@@ -4,7 +4,11 @@ from datetime import datetime, timezone
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..const import DEFAULT_PRESETS
+from ..const import (
+    DEFAULT_BUFFER_MIN_TEMP,
+    DEFAULT_BUFFER_TEMP_HYSTERESIS,
+    DEFAULT_PRESETS,
+)
 from .enums import GlobalMode, OverrideMode, RoomState
 from .events import EventLogBuffer
 from .pump import PumpAction
@@ -21,6 +25,9 @@ class HeatingSystem:
         name: str,
         global_mode: GlobalMode = GlobalMode.HOME,
         presets: Optional[Dict[str, float]] = None,
+        buffer_temp_sensor: Optional[str] = None,
+        buffer_min_temp: float = DEFAULT_BUFFER_MIN_TEMP,
+        buffer_temp_hysteresis: float = DEFAULT_BUFFER_TEMP_HYSTERESIS,
         event_log_size: int = 100,
     ) -> None:
         """Initialize the heating system."""
@@ -30,6 +37,13 @@ class HeatingSystem:
         self.presets = presets or dict(DEFAULT_PRESETS)
         self.zones: Dict[str, HeatingZone] = {}
         self.event_log = EventLogBuffer(max_size=event_log_size)
+
+        # Buffer Tank / Puffer Interlock
+        self.buffer_temp_sensor = buffer_temp_sensor
+        self.buffer_min_temp = float(buffer_min_temp)
+        self.buffer_temp_hysteresis = float(buffer_temp_hysteresis)
+        self.buffer_current_temp: Optional[float] = None
+        self.is_buffer_ready: bool = True if not buffer_temp_sensor else False
 
     def add_zone(self, zone: HeatingZone) -> None:
         """Add a heating zone to the system."""
@@ -96,6 +110,78 @@ class HeatingSystem:
             message=f"Preset {preset_clean.upper()} aggiornato a {val_rounded}°C (precedente: {old_val}°C)",
             metadata={"preset": preset_clean, "old": old_val, "new": val_rounded},
         )
+
+    def configure_buffer(
+        self,
+        sensor_id: Optional[str],
+        min_temp: float = DEFAULT_BUFFER_MIN_TEMP,
+        hysteresis: float = DEFAULT_BUFFER_TEMP_HYSTERESIS,
+    ) -> None:
+        """Configure buffer tank / puffer temperature interlock."""
+        self.buffer_temp_sensor = sensor_id
+        self.buffer_min_temp = float(min_temp)
+        self.buffer_temp_hysteresis = float(hysteresis)
+        if not sensor_id:
+            self.is_buffer_ready = True
+            self.buffer_current_temp = None
+        else:
+            if self.buffer_current_temp is not None:
+                self.update_buffer_temperature(self.buffer_current_temp)
+            else:
+                self.is_buffer_ready = False
+
+    def update_buffer_temperature(self, temp: Optional[float]) -> bool:
+        """Update buffer storage temperature reading and evaluate availability.
+
+        Asymmetric hysteresis:
+        - If not ready: becomes ready only when temp >= buffer_min_temp.
+        - If ready: turns off only if temp drops below (buffer_min_temp - buffer_temp_hysteresis).
+
+        Returns True if readiness changed.
+        """
+        self.buffer_current_temp = temp
+        if not self.buffer_temp_sensor:
+            self.is_buffer_ready = True
+            return False
+
+        was_ready = self.is_buffer_ready
+        if temp is None:
+            self.is_buffer_ready = False
+            if was_ready:
+                self.event_log.record(
+                    entity_type="system",
+                    entity_id=self.system_id,
+                    entity_name=self.name,
+                    event_type="buffer_unavailable",
+                    message="Sensore accumulo termico non disponibile: pompe inibite per sicurezza",
+                )
+            return was_ready != self.is_buffer_ready
+
+        if not self.is_buffer_ready:
+            if temp >= self.buffer_min_temp:
+                self.is_buffer_ready = True
+                self.event_log.record(
+                    entity_type="system",
+                    entity_id=self.system_id,
+                    entity_name=self.name,
+                    event_type="buffer_ready",
+                    message=f"Accumulo termico pronto ({temp}°C >= {self.buffer_min_temp}°C): avvio pompe autorizzato",
+                    metadata={"temp": temp, "min_temp": self.buffer_min_temp},
+                )
+        else:
+            cutoff = self.buffer_min_temp - self.buffer_temp_hysteresis
+            if temp < cutoff:
+                self.is_buffer_ready = False
+                self.event_log.record(
+                    entity_type="system",
+                    entity_id=self.system_id,
+                    entity_name=self.name,
+                    event_type="buffer_cooled_down",
+                    message=f"Accumulo termico raffreddato ({temp}°C < {cutoff}°C): pompe spente in attesa riserva",
+                    metadata={"temp": temp, "cutoff": cutoff},
+                )
+
+        return was_ready != self.is_buffer_ready
 
     def evaluate_tick(
         self,
@@ -164,7 +250,7 @@ class HeatingSystem:
             prev_zone_demand = zone.heat_demand
             prev_pump_state = zone.pump_controller.state
 
-            action, pump_reason = zone.evaluate(now=t)
+            action, pump_reason = zone.evaluate(now=t, buffer_ready=self.is_buffer_ready)
 
             if zone.heat_demand != prev_zone_demand:
                 event_type = (
@@ -254,10 +340,15 @@ class HeatingSystem:
             "name": self.name,
             "global_mode": self.global_mode.value,
             "presets": self.presets,
+            "buffer_temp_sensor": self.buffer_temp_sensor,
+            "buffer_min_temp": self.buffer_min_temp,
+            "buffer_temp_hysteresis": self.buffer_temp_hysteresis,
+            "buffer_current_temp": self.buffer_current_temp,
+            "is_buffer_ready": self.is_buffer_ready,
             "total_heat_demand": self.total_heat_demand,
             "total_active_zones_count": self.total_active_zones_count,
             "total_active_rooms_count": self.total_active_rooms_count,
-            "zones": {z_id: z.to_dict() for z_id, z in self.zones.items()},
+            "zones": {z_id: z.to_dict(self.presets) for z_id, z in self.zones.items()},
             "recent_events": self.event_log.get_events(limit=20),
         }
 
@@ -269,7 +360,17 @@ class HeatingSystem:
             name=data["name"],
             global_mode=GlobalMode(data.get("global_mode", GlobalMode.HOME.value)),
             presets=data.get("presets", dict(DEFAULT_PRESETS)),
+            buffer_temp_sensor=data.get("buffer_temp_sensor"),
+            buffer_min_temp=float(data.get("buffer_min_temp", DEFAULT_BUFFER_MIN_TEMP)),
+            buffer_temp_hysteresis=float(
+                data.get("buffer_temp_hysteresis", DEFAULT_BUFFER_TEMP_HYSTERESIS)
+            ),
         )
+        sys.buffer_current_temp = data.get("buffer_current_temp")
+        if sys.buffer_temp_sensor:
+            sys.is_buffer_ready = data.get("is_buffer_ready", False)
+        else:
+            sys.is_buffer_ready = True
 
         for z_id, z_data in data.get("zones", {}).items():
             zone = HeatingZone.from_dict(z_data)

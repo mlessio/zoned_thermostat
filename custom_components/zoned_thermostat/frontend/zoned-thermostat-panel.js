@@ -117,6 +117,47 @@ class ZonedThermostatPanel extends HTMLElement {
     await this._loadData();
   }
 
+  async _setZonePumpManual(zoneId, manualOn) {
+    if (!this._hass) return;
+    await this._hass.callWS({
+      type: "zoned_thermostat/set_zone_pump_manual",
+      zone_id: zoneId,
+      manual_on: manualOn,
+    });
+    await this._loadData();
+  }
+
+  async _applyRoomPreset(roomId, preset) {
+    if (!this._hass) return;
+    await this._hass.callWS({
+      type: "zoned_thermostat/apply_room_preset",
+      room_id: roomId,
+      preset: preset,
+    });
+    await this._loadData();
+  }
+
+  async _setRoomPresets(roomId, presets) {
+    if (!this._hass) return;
+    await this._hass.callWS({
+      type: "zoned_thermostat/set_room_presets",
+      room_id: roomId,
+      presets: presets,
+    });
+    await this._loadData();
+  }
+
+  async _setBufferSettings(sensorId, minTemp, hysteresis) {
+    if (!this._hass) return;
+    await this._hass.callWS({
+      type: "zoned_thermostat/set_buffer_settings",
+      sensor_id: sensorId,
+      min_temp: parseFloat(minTemp),
+      hysteresis: parseFloat(hysteresis),
+    });
+    await this._loadData();
+  }
+
   _render() {
     if (!this._systemData) {
       this.shadowRoot.innerHTML = `
@@ -463,6 +504,71 @@ class ZonedThermostatPanel extends HTMLElement {
           border-radius: 4px;
         }
 
+        .clickable-target {
+          cursor: pointer;
+          text-decoration: underline dotted rgba(255,255,255,0.4);
+          border-radius: 4px;
+          padding: 2px 6px;
+          transition: all 0.2s ease;
+        }
+
+        .clickable-target:hover {
+          color: var(--primary-color, #03a9f4);
+          background: rgba(3, 169, 244, 0.15);
+        }
+
+        .pump-manual-toggle {
+          border: none;
+          padding: 6px 14px;
+          border-radius: 20px;
+          font-size: 0.82rem;
+          font-weight: 700;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .pump-manual-auto {
+          background: rgba(255, 255, 255, 0.08);
+          color: #e0e0e0;
+          border: 1px solid rgba(255, 255, 255, 0.15);
+        }
+
+        .pump-manual-auto:hover {
+          background: rgba(255, 255, 255, 0.16);
+          color: #ffffff;
+        }
+
+        .pump-manual-on {
+          background: #e65100;
+          color: #ffffff;
+          box-shadow: 0 0 12px rgba(230, 81, 0, 0.6);
+          border: 1px solid #ff9800;
+        }
+
+        .pump-manual-on:hover {
+          background: #f57c00;
+        }
+
+        .preset-pill.active-preset {
+          background: var(--primary-color, #03a9f4) !important;
+          color: #ffffff !important;
+          box-shadow: 0 2px 10px rgba(3, 169, 244, 0.5) !important;
+          font-weight: 700;
+        }
+
+        .badge-buffer-ready {
+          border-color: rgba(76, 175, 80, 0.4) !important;
+          background: rgba(76, 175, 80, 0.12) !important;
+        }
+
+        .badge-buffer-waiting {
+          border-color: rgba(255, 152, 0, 0.4) !important;
+          background: rgba(255, 152, 0, 0.12) !important;
+        }
+
         /* SCHEDULER VIEW */
         .scheduler-container {
           background: var(--card-background-color, #1c1c1e);
@@ -578,6 +684,17 @@ class ZonedThermostatPanel extends HTMLElement {
           <div class="badge-metric">
             <span>Zone Attive: ${sys.total_active_zones_count} / ${Object.keys(sys.zones || {}).length}</span>
           </div>
+
+          ${sys.buffer_temp_sensor ? `
+            <div class="badge-metric ${sys.is_buffer_ready ? 'badge-buffer-ready' : 'badge-buffer-waiting'}" title="Sensore: ${sys.buffer_temp_sensor} | Isteresi stop: ${sys.buffer_temp_hysteresis}°C">
+              <span>🛢️ Accumulo:</span>
+              <strong style="color: #ffffff;">${sys.buffer_current_temp !== null && sys.buffer_current_temp !== undefined ? `${sys.buffer_current_temp}°C` : '--'}</strong>
+              <span style="font-size: 0.78rem; opacity: 0.85;">(min ${sys.buffer_min_temp}°C)</span>
+              <span style="font-weight: 700; color: ${sys.is_buffer_ready ? '#4caf50' : '#ff9800'}">
+                ${sys.is_buffer_ready ? '✓ PRONTO' : '⏳ IN ATTESA'}
+              </span>
+            </div>
+          ` : ''}
         </div>
       </div>
 
@@ -618,19 +735,35 @@ class ZonedThermostatPanel extends HTMLElement {
     const isPumpOn = zone.pump && zone.pump.is_physically_on;
     const pumpState = zone.pump ? zone.pump.state : 'off';
     const pumpReason = zone.pump ? zone.pump.status_reason : 'N/D';
+    const isManual = Boolean(zone.manual_pump_mode);
     const rooms = Object.values(zone.rooms || {});
 
     return `
       <div class="zone-card">
         <div class="zone-header">
-          <h2 class="zone-title">${zone.name}</h2>
-          <div class="pump-indicator ${isPumpOn ? 'pump-on' : 'pump-off'}">
-            <span>⚙️ Pompa: ${pumpState.toUpperCase()}</span>
+          <div>
+            <h2 class="zone-title">${zone.name}</h2>
+            <div style="font-size: 0.8rem; color: #888; margin-top: 2px;">
+              Pompa: <code>${zone.pump ? zone.pump.pump_switch_id : 'N/D'}</code>
+            </div>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <button class="pump-manual-toggle ${isManual ? 'pump-manual-on' : 'pump-manual-auto'}"
+                    data-action="toggle-pump-manual"
+                    data-zone="${zone.zone_id}"
+                    data-manual="${isManual}"
+                    title="Clicca per forzare l'accensione manuale della pompa della zona">
+              ${isManual ? '🔥 Pompa: MANUALE ON' : '⚙️ Pompa: AUTO'}
+            </button>
+            <div class="pump-indicator ${isPumpOn ? 'pump-on' : 'pump-off'}">
+              <span>${isPumpOn ? '● ATTIVA' : '○ SPENTA'}</span>
+            </div>
           </div>
         </div>
 
         <div class="pump-reason">
           <strong>Stato Pompa:</strong> ${pumpReason}
+          ${isManual ? '<div style="margin-top: 4px; color: #ffb74d; font-weight: 600;">⚠️ Modalità forzata manuale attiva: pompa accesa indipendentemente dai setpoint.</div>' : ''}
         </div>
 
         <div class="rooms-list">
@@ -661,6 +794,12 @@ class ZonedThermostatPanel extends HTMLElement {
     }
 
     const trvEntries = Object.entries(room.trv_states || {});
+    const eff = room.effective_presets || {};
+    const comfortVal = eff.comfort !== undefined ? eff.comfort : 21.0;
+    const ecoVal = eff.eco !== undefined ? eff.eco : 18.0;
+
+    const isComfortActive = Math.abs(room.target_temp - comfortVal) < 0.1;
+    const isEcoActive = Math.abs(room.target_temp - ecoVal) < 0.1;
 
     return `
       <div class="room-item">
@@ -680,21 +819,33 @@ class ZonedThermostatPanel extends HTMLElement {
 
         <div class="room-temp-row">
           <span class="current-temp-big">${currTemp}</span>
-          <span class="target-temp-display">/ target ${targetTemp}</span>
+          <span class="target-temp-display">/ target <span class="clickable-target" data-action="prompt-target" data-room="${room.room_id}" data-target="${room.target_temp}" data-name="${room.name}" title="Clicca per impostare la temperatura">${targetTemp} ✏️</span></span>
         </div>
 
         <div class="controls-row">
           <div class="temp-stepper">
-            <button class="step-btn" data-action="step-down" data-room="${room.room_id}" data-target="${room.target_temp}">-</button>
-            <span style="padding: 0 10px; font-weight: 700; font-size: 0.95rem;">${targetTemp}</span>
-            <button class="step-btn" data-action="step-up" data-room="${room.room_id}" data-target="${room.target_temp}">+</button>
+            <button class="step-btn" data-action="step-down" data-room="${room.room_id}" data-target="${room.target_temp}" title="Diminuisci di 0.5°C">-</button>
+            <span class="clickable-target" style="padding: 0 10px; font-weight: 700; font-size: 0.95rem;" data-action="prompt-target" data-room="${room.room_id}" data-target="${room.target_temp}" data-name="${room.name}" title="Clicca per digitare il setpoint">${targetTemp}</span>
+            <button class="step-btn" data-action="step-up" data-room="${room.room_id}" data-target="${room.target_temp}" title="Aumenta di 0.5°C">+</button>
           </div>
 
-          <button class="preset-pill" data-action="set-preset" data-room="${room.room_id}" data-val="21.0">Comfort (21°)</button>
-          <button class="preset-pill" data-action="set-preset" data-room="${room.room_id}" data-val="18.0">Eco (18°)</button>
+          <button class="preset-pill ${isComfortActive ? 'active-preset' : ''}"
+                  data-action="apply-preset"
+                  data-room="${room.room_id}"
+                  data-preset="comfort"
+                  title="Imposta modalità Comfort (${comfortVal}°C)">
+            Comfort (${comfortVal}°)
+          </button>
+          <button class="preset-pill ${isEcoActive ? 'active-preset' : ''}"
+                  data-action="apply-preset"
+                  data-room="${room.room_id}"
+                  data-preset="eco"
+                  title="Imposta modalità Eco (${ecoVal}°C)">
+            Eco (${ecoVal}°)
+          </button>
 
           ${room.manual_override ? `
-            <button class="preset-pill" style="color: #ff5252;" data-action="clear-override" data-room="${room.room_id}">Annulla Override</button>
+            <button class="preset-pill" style="color: #ff5252;" data-action="clear-override" data-room="${room.room_id}" title="Ripristina programmazione oraria">Annulla Override</button>
           ` : ''}
         </div>
 
@@ -820,10 +971,28 @@ class ZonedThermostatPanel extends HTMLElement {
         <div style="background: rgba(3, 169, 244, 0.1); border: 1px solid rgba(3, 169, 244, 0.3); border-radius: 12px; padding: 18px 22px;">
           <h3 style="margin: 0 0 8px 0; color: var(--primary-color, #03a9f4); font-size: 1.15rem;">🛠️ Configurazione & Gestione Entità</h3>
           <p style="margin: 0; line-height: 1.6; font-size: 0.95rem;">
-            Tutti i sensori di temperatura, le valvole termostatiche (TRV), gli switch delle pompe e le zone possono essere modificati in qualsiasi momento.
-            <br/>Per modificare un'entità, aggiungere o eliminare stanze/zone:
+            Tutti i sensori di temperatura, le valvole termostatiche (TRV), gli switch delle pompe, le soglie dell'accumulo e i preset delle singole stanze possono essere gestiti direttamente qui o nel wizard:
             <br/>Vai in <strong>Impostazioni &rarr; Dispositivi e Servizi &rarr; Zoned Heating Thermostat &rarr; CONFIGURA</strong>.
           </p>
+        </div>
+
+        <!-- Buffer Tank Management Card -->
+        <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 18px 22px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 12px;">
+            <h3 style="margin: 0; font-size: 1.2rem; display: flex; align-items: center; gap: 8px;">
+              🛢️ Accumulo Termico / Puffer (Interblocco Pompe)
+            </h3>
+            <button class="preset-pill" data-action="edit-buffer-settings" style="font-size: 0.85rem; padding: 6px 14px; background: rgba(3, 169, 244, 0.2); border: 1px solid rgba(3, 169, 244, 0.4); color: #fff;">
+              ✏️ Modifica Soglie Accumulo
+            </button>
+          </div>
+          <div style="font-size: 0.9rem; line-height: 1.8; color: #ddd;">
+            <div>• <strong>Sensore Temperatura:</strong> <code>${sys.buffer_temp_sensor || 'Nessuno (controllo disattivato, pompe libere)'}</code></div>
+            <div>• <strong>Temperatura Attuale:</strong> <strong>${sys.buffer_current_temp !== null && sys.buffer_current_temp !== undefined ? `${sys.buffer_current_temp}°C` : 'N/D'}</strong></div>
+            <div>• <strong>Soglia Minima di Avvio:</strong> ${sys.buffer_min_temp}°C (le pompe non partono finché l'accumulo non raggiunge questo valore)</div>
+            <div>• <strong>Isteresi di Spegnimento:</strong> ${sys.buffer_temp_hysteresis}°C (spegne le pompe se l'acqua scende sotto a ${(sys.buffer_min_temp - sys.buffer_temp_hysteresis).toFixed(1)}°C)</div>
+            <div>• <strong>Stato Riserva:</strong> <strong style="color: ${sys.is_buffer_ready ? '#4caf50' : '#ff9800'}">${sys.is_buffer_ready ? '✓ PRONTO (avvio pompe autorizzato)' : '⏳ IN ATTESA RISERVA (pompe bloccate)'}</strong></div>
+          </div>
         </div>
 
         <div class="zones-grid">
@@ -836,26 +1005,40 @@ class ZonedThermostatPanel extends HTMLElement {
 
               <div style="font-size: 0.88rem; line-height: 1.6; margin-bottom: 18px; background: rgba(0,0,0,0.25); padding: 14px; border-radius: 8px;">
                 <div><strong>Pompa associata:</strong> <code>${z.pump ? z.pump.pump_switch_id : 'N/D'}</code></div>
+                <div><strong>Modalità Pompa:</strong> <strong>${z.manual_pump_mode ? '🔥 FORZATA MANUALE ON' : '⚙️ AUTOMATICA (su richiesta calore)'}</strong></div>
                 <div><strong>Protezione Min ON / Min OFF:</strong> ${z.pump ? z.pump.min_on_time : 120}s / ${z.pump ? z.pump.min_off_time : 120}s</div>
                 <div><strong>Ritardo Avvio / Spegnimento:</strong> ${z.pump ? z.pump.startup_delay : 15}s / ${z.pump ? z.pump.shutdown_delay : 30}s</div>
               </div>
 
               <h4 style="margin: 12px 0 10px 0; font-size: 1.05rem;">Stanze Configurate (${Object.keys(z.rooms || {}).length}):</h4>
               <div style="display: flex; flex-direction: column; gap: 12px;">
-                ${Object.values(z.rooms || {}).map(r => `
-                  <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 14px;">
-                    <div style="display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 8px;">
-                      <span style="font-size: 1.05rem;">🏠 ${r.name}</span>
-                      <span style="font-size: 0.8rem; color: #888;">ID: ${r.room_id}</span>
+                ${Object.values(z.rooms || {}).map(r => {
+                  const comfortVal = (r.effective_presets && r.effective_presets.comfort !== undefined) ? r.effective_presets.comfort : 21.0;
+                  const ecoVal = (r.effective_presets && r.effective_presets.eco !== undefined) ? r.effective_presets.eco : 18.0;
+                  return `
+                    <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 14px;">
+                      <div style="display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 8px;">
+                        <span style="font-size: 1.05rem;">🏠 ${r.name}</span>
+                        <span style="font-size: 0.8rem; color: #888;">ID: ${r.room_id}</span>
+                      </div>
+                      <div style="font-size: 0.85rem; line-height: 1.7; color: #ccc;">
+                        <div>• <strong>Preset Indipendenti:</strong> Comfort <strong>${comfortVal}°C</strong> | Eco <strong>${ecoVal}°C</strong></div>
+                        <div>• <strong>Sensore Temperatura:</strong> <code>${(r.temp_sensor_ids && r.temp_sensor_ids.length > 0) ? r.temp_sensor_ids.join(', ') : 'Nessun sensore'}</code></div>
+                        <div>• <strong>Valvole TRV:</strong> <code>${(r.trv_ids && r.trv_ids.length > 0) ? r.trv_ids.join(', ') : 'Nessuna valvola'}</code></div>
+                        <div>• <strong>Sensore Finestra:</strong> <code>${r.window_sensor_id || 'Nessuno'}</code></div>
+                        <div>• <strong>Isteresi:</strong> &plusmn;${r.hysteresis}&deg;C | <strong>Range:</strong> ${r.min_temp}&deg;C - ${r.max_temp}&deg;C</div>
+                      </div>
+                      <button class="preset-pill" style="margin-top: 10px; font-size: 0.8rem; background: rgba(255,255,255,0.08);"
+                              data-action="edit-room-presets"
+                              data-room="${r.room_id}"
+                              data-comfort="${comfortVal}"
+                              data-eco="${ecoVal}"
+                              data-name="${r.name}">
+                        ✏️ Modifica Preset ${r.name}
+                      </button>
                     </div>
-                    <div style="font-size: 0.85rem; line-height: 1.6; color: #ccc;">
-                      <div>• <strong>Sensore Temperatura:</strong> <code>${(r.temp_sensor_ids && r.temp_sensor_ids.length > 0) ? r.temp_sensor_ids.join(', ') : 'Nessun sensore'}</code></div>
-                      <div>• <strong>Valvole TRV:</strong> <code>${(r.trv_ids && r.trv_ids.length > 0) ? r.trv_ids.join(', ') : 'Nessuna valvola'}</code></div>
-                      <div>• <strong>Sensore Finestra:</strong> <code>${r.window_sensor_id || 'Nessuno'}</code></div>
-                      <div>• <strong>Isteresi:</strong> &plusmn;${r.hysteresis}&deg;C | <strong>Range:</strong> ${r.min_temp}&deg;C - ${r.max_temp}&deg;C</div>
-                    </div>
-                  </div>
-                `).join('')}
+                  `;
+                }).join('')}
               </div>
             </div>
           `).join('')}
@@ -886,7 +1069,7 @@ class ZonedThermostatPanel extends HTMLElement {
     if (mFrost) mFrost.onclick = () => this._setGlobalMode("frost");
     if (mOff) mOff.onclick = () => this._setGlobalMode("off");
 
-    // Room control clicks
+    // Room control clicks & interactive buttons
     root.querySelectorAll("[data-action]").forEach(btn => {
       btn.onclick = async (e) => {
         const action = btn.dataset.action;
@@ -897,6 +1080,9 @@ class ZonedThermostatPanel extends HTMLElement {
         } else if (action === "step-down") {
           const t = parseFloat(btn.dataset.target) - 0.5;
           await this._setRoomOverride(roomId, t);
+        } else if (action === "apply-preset") {
+          const preset = btn.dataset.preset;
+          await this._applyRoomPreset(roomId, preset);
         } else if (action === "set-preset") {
           const t = parseFloat(btn.dataset.val);
           await this._setRoomOverride(roomId, t);
@@ -904,6 +1090,46 @@ class ZonedThermostatPanel extends HTMLElement {
           await this._clearRoomOverride(roomId);
         } else if (action === "set-hvac") {
           await this._setRoomHvacMode(roomId, btn.dataset.mode);
+        } else if (action === "prompt-target") {
+          const curr = parseFloat(btn.dataset.target) || 20.0;
+          const roomName = btn.dataset.name || "Stanza";
+          const input = prompt(`Imposta temperatura desiderata per ${roomName} (°C):`, curr);
+          if (input !== null) {
+            const val = parseFloat(input);
+            if (!isNaN(val)) {
+              await this._setRoomOverride(roomId, val);
+            }
+          }
+        } else if (action === "toggle-pump-manual") {
+          const zoneId = btn.dataset.zone;
+          const isManual = btn.dataset.manual === "true";
+          await this._setZonePumpManual(zoneId, !isManual);
+        } else if (action === "edit-buffer-settings") {
+          const sys = this._systemData;
+          const currMin = sys.buffer_min_temp !== undefined ? sys.buffer_min_temp : 45.0;
+          const currHyst = sys.buffer_temp_hysteresis !== undefined ? sys.buffer_temp_hysteresis : 2.0;
+          const newMin = prompt(`Temperatura minima di avvio accumulo (°C):`, currMin);
+          if (newMin === null) return;
+          const newHyst = prompt(`Isteresi di spegnimento pompe accumulo (°C):`, currHyst);
+          if (newHyst === null) return;
+          const mVal = parseFloat(newMin);
+          const hVal = parseFloat(newHyst);
+          if (!isNaN(mVal) && !isNaN(hVal)) {
+            await this._setBufferSettings(sys.buffer_temp_sensor, mVal, hVal);
+          }
+        } else if (action === "edit-room-presets") {
+          const roomName = btn.dataset.name || "Stanza";
+          const currC = btn.dataset.comfort || "21";
+          const currE = btn.dataset.eco || "18";
+          const newC = prompt(`Temperatura Comfort per ${roomName} (°C):`, currC);
+          if (newC === null) return;
+          const newE = prompt(`Temperatura Eco per ${roomName} (°C):`, currE);
+          if (newE === null) return;
+          const cVal = parseFloat(newC);
+          const eVal = parseFloat(newE);
+          if (!isNaN(cVal) && !isNaN(eVal)) {
+            await this._setRoomPresets(roomId, { comfort: cVal, eco: eVal });
+          }
         }
       };
     });

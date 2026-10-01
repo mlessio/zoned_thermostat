@@ -26,6 +26,10 @@ DEFAULT_WINDOW_DELAY = 15           # 15 seconds before turning off room demand
 DEFAULT_AWAY_TEMP = 16.0
 DEFAULT_FROST_TEMP = 10.0
 
+# Buffer tank / Accumulo defaults (°C)
+DEFAULT_BUFFER_MIN_TEMP = 45.0
+DEFAULT_BUFFER_TEMP_HYSTERESIS = 2.0
+
 # Presets defaults (°C)
 DEFAULT_PRESET_COMFORT = 21.0
 DEFAULT_PRESET_ECO = 18.0

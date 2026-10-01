@@ -139,6 +139,38 @@ class TestOptionsFlow(unittest.TestCase):
         self.assertEqual(res_rem["type"], "create_entry")
         self.assertIsNone(self.sys.get_room("cucina"))
 
+    def test_buffer_settings_flow(self):
+        """Configure buffer tank sensor, minimum start temp, and hysteresis."""
+        user_input = {
+            "buffer_temp_sensor": "sensor.puffer_temperature",
+            "buffer_min_temp": 48.0,
+            "buffer_temp_hysteresis": 2.5,
+        }
+        res = asyncio.run(self.flow.async_step_buffer_settings(user_input))
+        self.assertEqual(res["type"], "create_entry")
+        self.assertEqual(
+            self.sys.buffer_temp_sensor, "sensor.puffer_temperature"
+        )
+        self.assertEqual(self.sys.buffer_min_temp, 48.0)
+        self.assertEqual(self.sys.buffer_temp_hysteresis, 2.5)
+
+    def test_edit_room_presets(self):
+        """Configure room-specific comfort and eco presets via edit_room_form."""
+        self.flow._selected_room_id = "sala"
+        user_input = {
+            "temp_sensor": "sensor.sala_temp_old",
+            "trvs": ["climate.trv_sala_old"],
+            "window_sensor": None,
+            "hysteresis": 0.2,
+            "comfort_temp": 21.5,
+            "eco_temp": 18.5,
+        }
+        res = asyncio.run(self.flow.async_step_edit_room_form(user_input))
+        self.assertEqual(res["type"], "create_entry")
+        sala = self.sys.get_room("sala")
+        self.assertEqual(sala.presets_override.get("comfort"), 21.5)
+        self.assertEqual(sala.presets_override.get("eco"), 18.5)
+
 
 if __name__ == "__main__":
     unittest.main()

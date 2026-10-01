@@ -81,6 +81,7 @@ class ManualOverride:
     duration_minutes: Optional[int] = None
     expires_at_timestamp: Optional[float] = None
     set_block_end_minutes: Optional[int] = None  # End minutes of the block active when set
+    preset_name: Optional[str] = None
 
     def is_expired(
         self, now_timestamp: float, current_minutes_from_midnight: int
@@ -117,6 +118,7 @@ class ManualOverride:
             "duration_minutes": self.duration_minutes,
             "expires_at_timestamp": self.expires_at_timestamp,
             "set_block_end_minutes": self.set_block_end_minutes,
+            "preset_name": self.preset_name,
         }
 
     @classmethod
@@ -129,6 +131,7 @@ class ManualOverride:
             duration_minutes=data.get("duration_minutes"),
             expires_at_timestamp=data.get("expires_at_timestamp"),
             set_block_end_minutes=data.get("set_block_end_minutes"),
+            preset_name=data.get("preset_name"),
         )
 
 

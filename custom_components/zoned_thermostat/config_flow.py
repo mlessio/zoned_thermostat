@@ -53,7 +53,11 @@ except ImportError:
     selector = mock.MagicMock()  # type: ignore
 
 from .const import (
+    DEFAULT_BUFFER_MIN_TEMP,
+    DEFAULT_BUFFER_TEMP_HYSTERESIS,
     DEFAULT_HYSTERESIS,
+    DEFAULT_PRESET_COMFORT,
+    DEFAULT_PRESET_ECO,
     DEFAULT_PUMP_MIN_OFF_TIME,
     DEFAULT_PUMP_MIN_ON_TIME,
     DEFAULT_PUMP_SHUTDOWN_DELAY,
@@ -415,6 +419,7 @@ class ZonedThermostatOptionsFlow(config_entries.OptionsFlow):
             step_id="init",
             menu_options=[
                 "view_config",
+                "buffer_settings",
                 "edit_room",
                 "edit_zone",
                 "add_room",
@@ -435,10 +440,22 @@ class ZonedThermostatOptionsFlow(config_entries.OptionsFlow):
         system = self._get_system()
         lines: List[str] = [f"### Impianto: {system.name}\n"]
 
+        # Buffer Tank Summary
+        lines.append("**Accumulo Termico / Puffer:**")
+        if system.buffer_temp_sensor:
+            status = "PRONTO" if system.is_buffer_ready else "IN RISCALDAMENTO (pompe bloccate)"
+            curr = f"{system.buffer_current_temp}°C" if system.buffer_current_temp is not None else "N/D"
+            lines.append(f"- Sensore: `{system.buffer_temp_sensor}` (attuale: {curr})")
+            lines.append(f"- Soglia minima: {system.buffer_min_temp}°C | Isteresi stop: {system.buffer_temp_hysteresis}°C")
+            lines.append(f"- Stato riserva: **{status}**")
+        else:
+            lines.append("- Nessun sensore accumulo configurato (controllo disattivato)")
+        lines.append("")
+
         for zone in system.zones.values():
             pump_id = zone.pump_controller.pump_switch_id or "Nessuna pompa"
             lines.append(f"**Zona: {zone.name}**")
-            lines.append(f"- Pompa: `{pump_id}` (stato fisico: {'ON' if zone.pump_controller.is_physically_on else 'OFF'})")
+            lines.append(f"- Pompa: `{pump_id}` (stato fisico: {'ON' if zone.pump_controller.is_physically_on else 'OFF'}, manuale: {'ON' if zone.manual_pump_mode else 'AUTO'})")
             lines.append(
                 f"- Tempi Pompa: Min ON {zone.pump_controller.min_on_time}s | Min OFF {zone.pump_controller.min_off_time}s | Avvio {zone.pump_controller.startup_delay}s | Stop {zone.pump_controller.shutdown_delay}s"
             )
@@ -449,7 +466,9 @@ class ZonedThermostatOptionsFlow(config_entries.OptionsFlow):
                 s_str = ", ".join(f"`{s}`" for s in room.temp_sensor_ids) if room.temp_sensor_ids else "Nessun sensore"
                 t_str = ", ".join(f"`{t}`" for t in room.trv_ids) if room.trv_ids else "Nessuna valvola"
                 w_str = f"`{room.window_sensor_id}`" if room.window_sensor_id else "Nessun sensore"
+                effective = room.get_effective_presets(system.presets)
                 lines.append(f"  • **{room.name}** (Target: {room.target_temp}°C, Isteresi: ±{room.hysteresis}°C):")
+                lines.append(f"    - Preset: Comfort {effective.get('comfort')}°C | Eco {effective.get('eco')}°C")
                 lines.append(f"    - Temp: {s_str}")
                 lines.append(f"    - TRV: {t_str}")
                 lines.append(f"    - Finestra: {w_str}")
@@ -461,6 +480,49 @@ class ZonedThermostatOptionsFlow(config_entries.OptionsFlow):
             data_schema=vol.Schema({}),
             description_placeholders={"summary": summary_text},
         )
+
+    async def async_step_buffer_settings(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> config_entries.ConfigFlowResult:
+        """Configure thermal storage / buffer tank interlock."""
+        system = self._get_system()
+
+        if user_input is not None:
+            sensor = user_input.get("buffer_temp_sensor")
+            min_temp = float(user_input["buffer_min_temp"])
+            hysteresis = float(user_input["buffer_temp_hysteresis"])
+            system.configure_buffer(sensor, min_temp, hysteresis)
+            await self._async_save_and_reload(system)
+            return self.async_create_entry(title="", data={})
+
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    "buffer_temp_sensor",
+                    default=system.buffer_temp_sensor or vol.UNDEFINED,
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=SENSOR_DOMAIN)
+                ),
+                vol.Required(
+                    "buffer_min_temp",
+                    default=system.buffer_min_temp,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=20.0, max=80.0, step=0.5, unit_of_measurement="°C"
+                    )
+                ),
+                vol.Required(
+                    "buffer_temp_hysteresis",
+                    default=system.buffer_temp_hysteresis,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0.5, max=10.0, step=0.5, unit_of_measurement="°C"
+                    )
+                ),
+            }
+        )
+
+        return self.async_show_form(step_id="buffer_settings", data_schema=schema)
 
     async def async_step_edit_room(
         self, user_input: Optional[Dict[str, Any]] = None
@@ -518,10 +580,15 @@ class ZonedThermostatOptionsFlow(config_entries.OptionsFlow):
             room.trv_ids = user_input.get("trvs", [])
             room.window_sensor_id = user_input.get("window_sensor")
             room.hysteresis = float(user_input.get("hysteresis", room.hysteresis))
+            if "comfort_temp" in user_input:
+                room.set_room_preset("comfort", float(user_input["comfort_temp"]))
+            if "eco_temp" in user_input:
+                room.set_room_preset("eco", float(user_input["eco_temp"]))
             await self._async_save_and_reload(system)
             return self.async_create_entry(title="", data={})
 
         curr_sensor = room.temp_sensor_ids[0] if room.temp_sensor_ids else None
+        effective = room.get_effective_presets(system.presets)
         schema = vol.Schema(
             {
                 vol.Required(
@@ -543,6 +610,26 @@ class ZonedThermostatOptionsFlow(config_entries.OptionsFlow):
                     default=room.window_sensor_id or vol.UNDEFINED,
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="binary_sensor")
+                ),
+                vol.Required(
+                    "comfort_temp",
+                    default=room.presets_override.get(
+                        "comfort", effective.get("comfort", DEFAULT_PRESET_COMFORT)
+                    ),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=14.0, max=30.0, step=0.5, unit_of_measurement="°C"
+                    )
+                ),
+                vol.Required(
+                    "eco_temp",
+                    default=room.presets_override.get(
+                        "eco", effective.get("eco", DEFAULT_PRESET_ECO)
+                    ),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=10.0, max=25.0, step=0.5, unit_of_measurement="°C"
+                    )
                 ),
                 vol.Required(
                     "hysteresis",
@@ -683,6 +770,10 @@ class ZonedThermostatOptionsFlow(config_entries.OptionsFlow):
                     trv_ids=user_input.get("trvs", []),
                     window_sensor_id=user_input.get("window_sensor"),
                     hysteresis=float(user_input.get("hysteresis", DEFAULT_HYSTERESIS)),
+                    presets_override={
+                        "comfort": float(user_input.get("comfort_temp", DEFAULT_PRESET_COMFORT)),
+                        "eco": float(user_input.get("eco_temp", DEFAULT_PRESET_ECO)),
+                    },
                 )
                 zone.add_room(new_room)
                 await self._async_save_and_reload(system)
@@ -709,6 +800,16 @@ class ZonedThermostatOptionsFlow(config_entries.OptionsFlow):
                 ),
                 vol.Optional("window_sensor"): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="binary_sensor")
+                ),
+                vol.Required("comfort_temp", default=DEFAULT_PRESET_COMFORT): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=14.0, max=30.0, step=0.5, unit_of_measurement="°C"
+                    )
+                ),
+                vol.Required("eco_temp", default=DEFAULT_PRESET_ECO): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=10.0, max=25.0, step=0.5, unit_of_measurement="°C"
+                    )
                 ),
                 vol.Required("hysteresis", default=DEFAULT_HYSTERESIS): selector.NumberSelector(
                     selector.NumberSelectorConfig(

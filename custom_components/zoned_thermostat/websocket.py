@@ -11,7 +11,22 @@ except ImportError:
     import unittest.mock as mock
 
     vol = mock.MagicMock()  # type: ignore
-    websocket_api = mock.MagicMock()  # type: ignore
+
+    class _MockWsApi:
+        @staticmethod
+        def websocket_command(*args, **kwargs):
+            def decorator(fn):
+                return fn
+            return decorator
+
+        @staticmethod
+        def async_response(fn):
+            return fn
+
+        class HomeAssistantError(Exception):
+            pass
+
+    websocket_api = _MockWsApi()  # type: ignore
     HomeAssistant = object  # type: ignore
 
     def callback(fn):  # type: ignore
@@ -279,6 +294,109 @@ async def ws_get_diagnostic_events(
         connection.send_error(msg["id"], "error", str(err))
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "zoned_thermostat/apply_room_preset",
+        vol.Optional("entry_id"): str,
+        vol.Required("room_id"): str,
+        vol.Required("preset"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_apply_room_preset(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: Dict[str, Any],
+) -> None:
+    """Apply room preset (Comfort, Eco, etc.) to a specific room."""
+    try:
+        coordinator = _get_coordinator(hass, msg.get("entry_id", ""))
+        await coordinator.async_apply_room_preset(
+            room_id=msg["room_id"], preset_name=msg["preset"]
+        )
+        connection.send_result(msg["id"], {"success": True})
+    except Exception as err:
+        connection.send_error(msg["id"], "error", str(err))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "zoned_thermostat/set_room_presets",
+        vol.Optional("entry_id"): str,
+        vol.Required("room_id"): str,
+        vol.Required("presets"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_set_room_presets(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: Dict[str, Any],
+) -> None:
+    """Configure independent preset values (comfort, eco, etc.) for a specific room."""
+    try:
+        coordinator = _get_coordinator(hass, msg.get("entry_id", ""))
+        await coordinator.async_set_room_presets(
+            room_id=msg["room_id"], presets=msg["presets"]
+        )
+        connection.send_result(msg["id"], {"success": True})
+    except Exception as err:
+        connection.send_error(msg["id"], "error", str(err))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "zoned_thermostat/set_zone_pump_manual",
+        vol.Optional("entry_id"): str,
+        vol.Required("zone_id"): str,
+        vol.Required("manual_on"): bool,
+    }
+)
+@websocket_api.async_response
+async def ws_set_zone_pump_manual(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: Dict[str, Any],
+) -> None:
+    """Toggle manual ON override for a zone circulation pump."""
+    try:
+        coordinator = _get_coordinator(hass, msg.get("entry_id", ""))
+        await coordinator.async_set_zone_pump_manual(
+            zone_id=msg["zone_id"], manual_on=msg["manual_on"]
+        )
+        connection.send_result(msg["id"], {"success": True})
+    except Exception as err:
+        connection.send_error(msg["id"], "error", str(err))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "zoned_thermostat/set_buffer_settings",
+        vol.Optional("entry_id"): str,
+        vol.Optional("sensor_id"): vol.Any(str, None),
+        vol.Required("min_temp"): vol.Coerce(float),
+        vol.Required("hysteresis"): vol.Coerce(float),
+    }
+)
+@websocket_api.async_response
+async def ws_set_buffer_settings(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: Dict[str, Any],
+) -> None:
+    """Configure thermal storage / puffer temperature sensor and interlock thresholds."""
+    try:
+        coordinator = _get_coordinator(hass, msg.get("entry_id", ""))
+        await coordinator.async_set_buffer_settings(
+            sensor_id=msg.get("sensor_id"),
+            min_temp=msg["min_temp"],
+            hysteresis=msg["hysteresis"],
+        )
+        connection.send_result(msg["id"], {"success": True})
+    except Exception as err:
+        connection.send_error(msg["id"], "error", str(err))
+
+
 @callback
 def async_register_websocket_commands(hass: HomeAssistant) -> None:
     """Register all websocket endpoints with Home Assistant."""
@@ -288,6 +406,10 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_set_room_hvac_mode)
     websocket_api.async_register_command(hass, ws_set_global_mode)
     websocket_api.async_register_command(hass, ws_set_preset)
+    websocket_api.async_register_command(hass, ws_apply_room_preset)
+    websocket_api.async_register_command(hass, ws_set_room_presets)
+    websocket_api.async_register_command(hass, ws_set_zone_pump_manual)
+    websocket_api.async_register_command(hass, ws_set_buffer_settings)
     websocket_api.async_register_command(hass, ws_update_schedule)
     websocket_api.async_register_command(hass, ws_copy_schedule)
     websocket_api.async_register_command(hass, ws_copy_zone_schedule)

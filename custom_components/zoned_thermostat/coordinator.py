@@ -120,6 +120,8 @@ class ZonedThermostatCoordinator:
     def _rebuild_tracked_entities(self) -> None:
         """Populate the set of entity IDs to track."""
         self._tracked_entities.clear()
+        if self.system.buffer_temp_sensor:
+            self._tracked_entities.add(self.system.buffer_temp_sensor)
         for zone in self.system.zones.values():
             if zone.pump_controller.pump_switch_id:
                 self._tracked_entities.add(zone.pump_controller.pump_switch_id)
@@ -161,6 +163,17 @@ class ZonedThermostatCoordinator:
         self, entity_id: str, state_val: str, attributes: Dict[str, Any]
     ) -> None:
         """Route state update to appropriate domain component."""
+        # 0. Check Buffer Storage Sensor
+        if self.system.buffer_temp_sensor == entity_id:
+            if state_val in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                self.system.update_buffer_temperature(None)
+            else:
+                try:
+                    temp = float(state_val)
+                    self.system.update_buffer_temperature(temp)
+                except (ValueError, TypeError):
+                    self.system.update_buffer_temperature(None)
+
         # 1. Check Pump Switches
         for zone in self.system.zones.values():
             if zone.pump_controller.pump_switch_id == entity_id:
@@ -304,6 +317,7 @@ class ZonedThermostatCoordinator:
         target_temp: float,
         mode: OverrideMode = OverrideMode.UNTIL_NEXT_CHANGE,
         duration_minutes: Optional[int] = None,
+        preset_name: Optional[str] = None,
     ) -> None:
         """Public API: set room temperature override and trigger evaluation."""
         room = self.system.get_room(room_id)
@@ -322,17 +336,104 @@ class ZonedThermostatCoordinator:
             now=now_ts,
             current_day=day_str,
             current_time=time_str,
+            preset_name=preset_name,
         )
 
+        preset_info = f" (preset {preset_name.upper()})" if preset_name else ""
         self.system.event_log.record(
             entity_type="room",
             entity_id=room.room_id,
             entity_name=room.name,
             event_type="manual_override_set",
-            message=f"{room.name}: Override manuale a {target_temp}°C (modo: {mode.value})",
-            metadata={"target": target_temp, "mode": mode.value},
+            message=f"{room.name}: Override manuale a {target_temp}°C{preset_info} (modo: {mode.value})",
+            metadata={"target": target_temp, "mode": mode.value, "preset": preset_name},
         )
 
+        await self.async_evaluate()
+
+    async def async_apply_room_preset(
+        self, room_id: str, preset_name: str
+    ) -> None:
+        """Public API: apply room-specific or global preset temperature to room."""
+        room = self.system.get_room(room_id)
+        if not room:
+            raise ValueError(f"Room {room_id} not found")
+
+        effective = room.get_effective_presets(self.system.presets)
+        preset_clean = preset_name.lower().strip()
+        target_temp = effective.get(preset_clean)
+        if target_temp is None:
+            raise ValueError(
+                f"Preset '{preset_name}' non valido per la stanza {room.name}"
+            )
+
+        await self.async_set_room_temperature(
+            room_id=room_id,
+            target_temp=target_temp,
+            mode=OverrideMode.UNTIL_NEXT_CHANGE,
+            preset_name=preset_clean,
+        )
+
+    async def async_set_room_presets(
+        self, room_id: str, presets: Dict[str, float]
+    ) -> None:
+        """Public API: update independent preset temperatures for a specific room."""
+        room = self.system.get_room(room_id)
+        if not room:
+            raise ValueError(f"Room {room_id} not found")
+
+        for p_name, p_val in presets.items():
+            room.set_room_preset(p_name, float(p_val))
+
+        self.system.event_log.record(
+            entity_type="room",
+            entity_id=room.room_id,
+            entity_name=room.name,
+            event_type="room_presets_updated",
+            message=f"{room.name}: Preset indipendenti salvati ({', '.join(f'{k}={v}°C' for k, v in presets.items())})",
+            metadata={"room_id": room_id, "presets": presets},
+        )
+
+        await self.async_evaluate()
+
+    async def async_set_zone_pump_manual(
+        self, zone_id: str, manual_on: bool
+    ) -> None:
+        """Public API: toggle circulation pump manual override for a zone."""
+        zone = self.system.get_zone(zone_id)
+        if not zone:
+            raise ValueError(f"Zone {zone_id} not found")
+
+        zone.set_manual_pump_mode(manual_on)
+        self.system.event_log.record(
+            entity_type="zone",
+            entity_id=zone.zone_id,
+            entity_name=zone.name,
+            event_type="zone_manual_pump_toggled",
+            message=f"Zona {zone.name}: Pompa impostata in modalità {'MANUALE ON' if manual_on else 'AUTOMATICA'}",
+            metadata={"zone_id": zone_id, "manual_pump_mode": manual_on},
+        )
+
+        await self.async_evaluate()
+
+    async def async_set_buffer_settings(
+        self,
+        sensor_id: Optional[str],
+        min_temp: float,
+        hysteresis: float,
+    ) -> None:
+        """Public API: configure thermal storage / puffer temperature settings."""
+        self.system.configure_buffer(sensor_id, min_temp, hysteresis)
+        self._rebuild_tracked_entities()
+        self._read_initial_states()
+        self.system.event_log.record(
+            entity_type="system",
+            entity_id=self.system.system_id,
+            entity_name=self.system.name,
+            event_type="buffer_settings_updated",
+            message=f"Impostazioni accumulo termico aggiornate: sensore={sensor_id or 'nessuno'}, min={min_temp}°C, isteresi={hysteresis}°C",
+            metadata={"sensor": sensor_id, "min_temp": min_temp, "hysteresis": hysteresis},
+        )
         await self.async_evaluate()
 
     async def async_clear_room_override(self, room_id: str) -> None:
