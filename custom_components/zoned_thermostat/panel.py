@@ -26,26 +26,58 @@ async def async_register_panel(hass: HomeAssistant) -> None:
     frontend_dir = Path(__file__).parent / "frontend"
 
     # 1. Register static directory for frontend JavaScript
-    try:
-        if hasattr(hass.http, "async_register_static_paths"):
-            from homeassistant.components.http import StaticPath
-            await hass.http.async_register_static_paths([
-                StaticPath(
-                    PANEL_STATIC_PATH,
-                    str(frontend_dir),
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    if not domain_data.get("_static_paths_registered"):
+        panel_file = frontend_dir / "zoned-thermostat-panel.js"
+        try:
+            if hasattr(hass.http, "async_register_static_paths"):
+                try:
+                    from homeassistant.components.http import StaticPathConfig
+
+                    await hass.http.async_register_static_paths([
+                        StaticPathConfig(
+                            PANEL_STATIC_PATH,
+                            str(frontend_dir),
+                            False,
+                        ),
+                        StaticPathConfig(
+                            f"{PANEL_STATIC_PATH}/zoned-thermostat-panel.js",
+                            str(panel_file),
+                            False,
+                        ),
+                    ])
+                    domain_data["_static_paths_registered"] = True
+                    _LOGGER.info(
+                        "Registered static path %s -> %s",
+                        PANEL_STATIC_PATH,
+                        frontend_dir,
+                    )
+                except ImportError:
+                    pass
+
+            if not domain_data.get("_static_paths_registered") and hasattr(
+                hass.http, "register_static_path"
+            ):
+                hass.http.register_static_path(
+                    PANEL_STATIC_PATH, str(frontend_dir), cache_headers=False
+                )
+                hass.http.register_static_path(
+                    f"{PANEL_STATIC_PATH}/zoned-thermostat-panel.js",
+                    str(panel_file),
                     cache_headers=False,
                 )
-            ])
-        elif hasattr(hass.http, "register_static_path"):
-            hass.http.register_static_path(
-                PANEL_STATIC_PATH, str(frontend_dir), cache_headers=False
-            )
-    except Exception as err:
-        _LOGGER.debug("Static path registration notice: %s", err)
+                domain_data["_static_paths_registered"] = True
+                _LOGGER.info(
+                    "Registered legacy static path %s -> %s",
+                    PANEL_STATIC_PATH,
+                    frontend_dir,
+                )
+        except Exception as err:
+            _LOGGER.error("Failed to register static path: %s", err)
 
     # 2. Prevent duplicate panel registration error if already present
     if hasattr(hass, "data") and PANEL_URL in hass.data.get("frontend_panels", {}):
-        _LOGGER.debug("Panel %s already registered.", PANEL_URL)
+        _LOGGER.debug("Panel %s already registered in frontend_panels.", PANEL_URL)
         return
 
     # 3. Register panel in sidebar via panel_custom

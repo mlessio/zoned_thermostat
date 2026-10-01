@@ -88,6 +88,30 @@ class TestPanelAndWebsocket(unittest.TestCase):
             asyncio.run(async_register_panel(mock_hass))
             mock_panel_custom.async_register_panel.assert_not_called()
 
+    def test_async_register_static_paths_with_static_path_config(self):
+        """Verify static paths are registered using StaticPathConfig."""
+        mock_hass = MagicMock()
+        mock_hass.data = {DOMAIN: {}, "frontend_panels": {}}
+        mock_hass.http = MagicMock()
+        mock_hass.http.async_register_static_paths = AsyncMock()
+
+        mock_config_cls = MagicMock()
+        mock_panel_custom = MagicMock()
+        mock_panel_custom.async_register_panel = AsyncMock()
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "homeassistant.components.http": MagicMock(StaticPathConfig=mock_config_cls),
+                "homeassistant.components.panel_custom": mock_panel_custom,
+            },
+        ):
+            with patch("custom_components.zoned_thermostat.panel.panel_custom", mock_panel_custom):
+                asyncio.run(async_register_panel(mock_hass))
+
+                mock_hass.http.async_register_static_paths.assert_awaited_once()
+                self.assertTrue(mock_hass.data[DOMAIN].get("_static_paths_registered"))
+
 
 if __name__ == "__main__":
     unittest.main()
