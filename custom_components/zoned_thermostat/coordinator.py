@@ -398,6 +398,24 @@ class ZonedThermostatCoordinator:
             preset_name=preset_clean,
         )
 
+    async def async_boost_room(
+        self,
+        room_id: str,
+        duration_minutes: int = 180,
+    ) -> None:
+        """Public API: boost room temperature to its maximum setpoint for a given duration (default 3 hours)."""
+        room = self.system.get_room(room_id)
+        if not room:
+            raise ValueError(f"Room {room_id} not found")
+
+        await self.async_set_room_temperature(
+            room_id=room_id,
+            target_temp=room.max_temp,
+            mode=OverrideMode.DURATION,
+            duration_minutes=duration_minutes,
+            preset_name="boost",
+        )
+
     async def async_set_room_presets(
         self, room_id: str, presets: Dict[str, float]
     ) -> None:
@@ -472,6 +490,7 @@ class ZonedThermostatCoordinator:
                 "overheat_hysteresis": overheat_hysteresis,
             },
         )
+        await self.storage.async_save(self.system)
         if hasattr(self.hass, "config_entries") and hasattr(self.storage, "entry_id"):
             entry = self.hass.config_entries.async_get_entry(self.storage.entry_id)
             if entry:

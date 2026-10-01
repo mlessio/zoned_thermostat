@@ -147,16 +147,63 @@ class ZonedThermostatPanel extends HTMLElement {
     await this._loadData();
   }
 
+  _findRoom(roomId) {
+    if (!this._systemData || !this._systemData.zones) return null;
+    for (const zone of Object.values(this._systemData.zones)) {
+      if (zone.rooms && zone.rooms[roomId]) {
+        return zone.rooms[roomId];
+      }
+    }
+    return null;
+  }
+
+  async _boostRoom(roomId, durationMinutes = 180) {
+    if (!this._hass) return;
+    try {
+      await this._hass.callWS({
+        type: "zoned_thermostat/boost_room",
+        room_id: roomId,
+        duration_minutes: durationMinutes,
+      });
+    } catch (err) {
+      // Fallback if backend was not restarted yet: invoke set_room_override with duration mode
+      const room = this._findRoom(roomId);
+      const maxTemp = room && room.max_temp !== undefined ? room.max_temp : 28.0;
+      await this._hass.callWS({
+        type: "zoned_thermostat/set_room_override",
+        room_id: roomId,
+        target: maxTemp,
+        mode: "duration",
+        duration_minutes: durationMinutes,
+      });
+    }
+    await this._loadData();
+  }
+
   async _setBufferSettings(sensorId, minTemp, hysteresis, overheatTemp, overheatHyst) {
     if (!this._hass) return;
-    await this._hass.callWS({
-      type: "zoned_thermostat/set_buffer_settings",
-      sensor_id: sensorId ? sensorId.trim() : null,
-      min_temp: parseFloat(minTemp),
-      hysteresis: parseFloat(hysteresis),
-      overheat_temp: parseFloat(overheatTemp !== undefined ? overheatTemp : 80.0),
-      overheat_hysteresis: parseFloat(overheatHyst !== undefined ? overheatHyst : 5.0),
-    });
+    try {
+      await this._hass.callWS({
+        type: "zoned_thermostat/set_buffer_settings",
+        sensor_id: sensorId ? sensorId.trim() : null,
+        min_temp: parseFloat(minTemp),
+        hysteresis: parseFloat(hysteresis),
+        overheat_temp: parseFloat(overheatTemp !== undefined ? overheatTemp : 80.0),
+        overheat_hysteresis: parseFloat(overheatHyst !== undefined ? overheatHyst : 5.0),
+      });
+    } catch (err) {
+      // Graceful fallback if live HA runtime still has previous schema without overheat fields
+      if (err && (err.code === "invalid_format" || (err.message && err.message.includes("overheat")))) {
+        await this._hass.callWS({
+          type: "zoned_thermostat/set_buffer_settings",
+          sensor_id: sensorId ? sensorId.trim() : null,
+          min_temp: parseFloat(minTemp),
+          hysteresis: parseFloat(hysteresis),
+        });
+      } else {
+        throw err;
+      }
+    }
     await this._loadData();
   }
 
@@ -274,11 +321,39 @@ class ZonedThermostatPanel extends HTMLElement {
     const currOverheat = sys.buffer_overheat_temp !== undefined ? sys.buffer_overheat_temp : 80.0;
     const currOverheatHyst = sys.buffer_overheat_hysteresis !== undefined ? sys.buffer_overheat_hysteresis : 5.0;
 
+    const sensorList = [];
+    if (this._hass && this._hass.states) {
+      for (const [eid, st] of Object.entries(this._hass.states)) {
+        if (eid.startsWith("sensor.")) {
+          const fn = st.attributes?.friendly_name || eid;
+          const uom = st.attributes?.unit_of_measurement || "";
+          const dc = st.attributes?.device_class;
+          const val = st.state;
+          const isTemp = dc === "temperature" || uom === "°C" || uom === "°F" || eid.includes("temp") || eid.includes("puffer") || eid.includes("accumulo") || eid.includes("termo") || eid.includes("sonda");
+          sensorList.push({ eid, name: fn, uom, val, isTemp });
+        }
+      }
+    }
+    sensorList.sort((a, b) => {
+      if (a.isTemp && !b.isTemp) return -1;
+      if (!a.isTemp && b.isTemp) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
     const content = `
-      <div class="modal-field">
-        <label>Sensore Temperatura Puffer (Entity ID):</label>
-        <input class="modal-input" id="buf-sensor" type="text" placeholder="es. sensor.temperatura_puffer" value="${currSensor}" />
-        <span style="font-size: 0.78rem; color: #888;">Lascia vuoto se non colleghi un sensore per l'accumulo.</span>
+      <div class="modal-field" style="position: relative;">
+        <label>Sensore Temperatura Puffer:</label>
+        <div style="position: relative; display: flex; align-items: center;">
+          <input class="modal-input" id="buf-sensor" type="text"
+                 placeholder="🔍 Cerca per nome o entity_id..."
+                 value="${currSensor}" autocomplete="off" style="padding-right: 32px;" />
+          <span id="buf-sensor-toggle" style="position: absolute; right: 10px; cursor: pointer; color: #aaa; font-size: 0.9rem;" title="Mostra tutti i sensori">▼</span>
+        </div>
+        <div id="buf-sensor-dropdown" class="entity-dropdown" style="display: none;"></div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 5px;">
+          <span style="font-size: 0.78rem; color: #888;">Digita per filtrare in tempo reale tra tutti i sensori di Home Assistant.</span>
+          <button id="buf-clear-sensor" type="button" style="background: none; border: none; color: #ff5252; cursor: pointer; font-size: 0.76rem; padding: 0;">Disabilita sensore</button>
+        </div>
       </div>
 
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
@@ -331,6 +406,76 @@ class ZonedThermostatPanel extends HTMLElement {
         await this._setBufferSettings(sensorVal || null, minVal, hystVal, overheatVal, overheatHystVal);
       },
     });
+
+    const sInput = this.shadowRoot.getElementById("buf-sensor");
+    const sToggle = this.shadowRoot.getElementById("buf-sensor-toggle");
+    const sDropdown = this.shadowRoot.getElementById("buf-sensor-dropdown");
+    const sClear = this.shadowRoot.getElementById("buf-clear-sensor");
+
+    if (sClear && sInput) {
+      sClear.onclick = () => {
+        sInput.value = "";
+        if (sDropdown) sDropdown.style.display = "none";
+      };
+    }
+
+    const renderOptions = (query) => {
+      if (!sDropdown) return;
+      const q = (query || "").toLowerCase().trim();
+      const filtered = sensorList.filter(s =>
+        !q || s.eid.toLowerCase().includes(q) || s.name.toLowerCase().includes(q)
+      ).slice(0, 30);
+
+      if (filtered.length === 0) {
+        sDropdown.innerHTML = `<div style="padding: 10px 12px; color: #888; font-size: 0.85rem;">Nessun sensore trovato per "${query}"</div>`;
+      } else {
+        sDropdown.innerHTML = filtered.map(s => {
+          const valDisplay = (s.val !== undefined && s.val !== null && s.val !== 'unknown' && s.val !== 'unavailable')
+            ? `<div class="entity-val">${s.val} ${s.uom}</div>` : '';
+          return `
+            <div class="entity-dropdown-item" data-eid="${s.eid}">
+              <div style="overflow: hidden; text-overflow: ellipsis; padding-right: 8px;">
+                <div class="entity-name">${s.isTemp ? '🌡️ ' : '🔹 '}${s.name}</div>
+                <div class="entity-id">${s.eid}</div>
+              </div>
+              ${valDisplay}
+            </div>
+          `;
+        }).join("");
+
+        sDropdown.querySelectorAll(".entity-dropdown-item").forEach(item => {
+          item.onclick = (e) => {
+            e.stopPropagation();
+            if (sInput) sInput.value = item.dataset.eid;
+            sDropdown.style.display = "none";
+          };
+        });
+      }
+      sDropdown.style.display = "block";
+    };
+
+    if (sInput && sDropdown) {
+      sInput.onfocus = () => renderOptions(sInput.value);
+      sInput.oninput = () => renderOptions(sInput.value);
+    }
+    if (sToggle && sDropdown) {
+      sToggle.onclick = (e) => {
+        e.stopPropagation();
+        if (sDropdown.style.display === "block") {
+          sDropdown.style.display = "none";
+        } else {
+          renderOptions(sInput ? sInput.value : "");
+        }
+      };
+    }
+    const modalEl = this.shadowRoot.getElementById("app-modal");
+    if (modalEl && sDropdown) {
+      modalEl.onclick = (e) => {
+        if (!e.target.closest("#buf-sensor") && !e.target.closest("#buf-sensor-toggle") && !e.target.closest("#buf-sensor-dropdown")) {
+          sDropdown.style.display = "none";
+        }
+      };
+    }
   }
 
   _openRoomPresetsDialog(roomId, roomName, currComfort, currEco) {
@@ -764,6 +909,87 @@ class ZonedThermostatPanel extends HTMLElement {
           color: #ffffff !important;
           box-shadow: 0 2px 10px rgba(3, 169, 244, 0.5) !important;
           font-weight: 700;
+        }
+
+        .boost-pill {
+          background: rgba(255, 107, 107, 0.12);
+          color: #ff8a65;
+          border: 1px solid rgba(255, 107, 107, 0.35);
+        }
+
+        .boost-pill:hover {
+          background: rgba(255, 107, 107, 0.22);
+          color: #ffab91;
+          border-color: rgba(255, 107, 107, 0.6);
+        }
+
+        .boost-pill.active-boost {
+          background: linear-gradient(135deg, #ff5722, #e91e63) !important;
+          color: #ffffff !important;
+          border-color: #ff9800 !important;
+          box-shadow: 0 0 12px rgba(255, 87, 34, 0.7) !important;
+          font-weight: 700;
+          animation: pulse-glow 2s infinite ease-in-out;
+        }
+
+        @keyframes pulse-glow {
+          0% { box-shadow: 0 0 8px rgba(255, 87, 34, 0.5); }
+          50% { box-shadow: 0 0 16px rgba(255, 87, 34, 0.85); }
+          100% { box-shadow: 0 0 8px rgba(255, 87, 34, 0.5); }
+        }
+
+        .badge-boost {
+          border-color: #ff5722 !important;
+          background: rgba(255, 87, 34, 0.25) !important;
+          color: #ff8a65 !important;
+          font-weight: 700;
+        }
+
+        .entity-dropdown {
+          position: absolute;
+          top: 100%;
+          left: 0;
+          right: 0;
+          max-height: 220px;
+          overflow-y: auto;
+          background: #252528;
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          border-radius: 8px;
+          z-index: 1000;
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+          margin-top: 4px;
+        }
+
+        .entity-dropdown-item {
+          padding: 8px 12px;
+          cursor: pointer;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+          transition: background 0.15s ease;
+        }
+
+        .entity-dropdown-item:hover {
+          background: rgba(3, 169, 244, 0.2);
+        }
+
+        .entity-dropdown-item .entity-name {
+          font-weight: 600;
+          font-size: 0.88rem;
+          color: #fff;
+        }
+
+        .entity-dropdown-item .entity-id {
+          font-size: 0.75rem;
+          color: #999;
+        }
+
+        .entity-dropdown-item .entity-val {
+          font-size: 0.82rem;
+          color: #4caf50;
+          font-weight: 700;
+          margin-left: 8px;
         }
 
         .badge-buffer-ready {
@@ -1246,10 +1472,26 @@ class ZonedThermostatPanel extends HTMLElement {
   _renderCompactRoomItem(room) {
     const currTemp = room.current_temp !== null && room.current_temp !== undefined ? `${room.current_temp}°C` : "--";
     const targetTemp = `${room.target_temp}°C`;
+    const maxTemp = room.max_temp !== undefined ? room.max_temp : 28.0;
+
+    const isBoostActive = Boolean(
+      room.manual_override && (
+        room.manual_override.preset_name === 'boost' ||
+        (room.manual_override.mode === 'duration' && Math.abs(room.target_temp - maxTemp) < 0.1)
+      )
+    );
+    let boostRemaining = "";
+    if (isBoostActive && room.manual_override && room.manual_override.expires_at_timestamp) {
+      const remMin = Math.max(1, Math.round((room.manual_override.expires_at_timestamp - (Date.now() / 1000)) / 60));
+      boostRemaining = `${remMin}m`;
+    }
 
     let badgeClass = "badge-idle";
     let badgeText = "RIPOSO";
-    if (room.state === "heating") {
+    if (isBoostActive) {
+      badgeClass = "badge-boost";
+      badgeText = `🚀 ${boostRemaining || 'BOOST'}`;
+    } else if (room.state === "heating") {
       badgeClass = "badge-heating";
       badgeText = "🔥 CALDO";
     } else if (room.state === "target_reached") {
@@ -1266,8 +1508,8 @@ class ZonedThermostatPanel extends HTMLElement {
     const eff = room.effective_presets || {};
     const comfortVal = eff.comfort !== undefined ? eff.comfort : 21.0;
     const ecoVal = eff.eco !== undefined ? eff.eco : 18.0;
-    const isComfortActive = Math.abs(room.target_temp - comfortVal) < 0.1;
-    const isEcoActive = Math.abs(room.target_temp - ecoVal) < 0.1;
+    const isComfortActive = !isBoostActive && Math.abs(room.target_temp - comfortVal) < 0.1;
+    const isEcoActive = !isBoostActive && Math.abs(room.target_temp - ecoVal) < 0.1;
 
     return `
       <div class="compact-room-item">
@@ -1290,14 +1532,14 @@ class ZonedThermostatPanel extends HTMLElement {
           </div>
         </div>
 
-        <div style="display: flex; gap: 6px; align-items: center;">
+        <div style="display: flex; gap: 4px; align-items: center;">
           <button class="preset-pill ${isComfortActive ? 'active-preset' : ''}"
                   style="font-size: 0.72rem; padding: 5px 6px; flex: 1; text-align: center;"
                   data-action="apply-preset"
                   data-room="${room.room_id}"
                   data-preset="comfort"
                   title="Comfort (${comfortVal}°C)">
-            Comfort ${comfortVal}°
+            ${comfortVal}°
           </button>
           <button class="preset-pill ${isEcoActive ? 'active-preset' : ''}"
                   style="font-size: 0.72rem; padding: 5px 6px; flex: 1; text-align: center;"
@@ -1305,7 +1547,15 @@ class ZonedThermostatPanel extends HTMLElement {
                   data-room="${room.room_id}"
                   data-preset="eco"
                   title="Eco (${ecoVal}°C)">
-            Eco ${ecoVal}°
+            ${ecoVal}°
+          </button>
+          <button class="preset-pill boost-pill ${isBoostActive ? 'active-boost' : ''}"
+                  style="font-size: 0.72rem; padding: 5px 6px; flex: 1; text-align: center;"
+                  data-action="boost-room"
+                  data-room="${room.room_id}"
+                  data-active="${isBoostActive ? 'true' : 'false'}"
+                  title="${isBoostActive ? `Boost attivo a ${maxTemp}°C (${boostRemaining || '3h'} rimasti). Clicca per disattivare` : `Boost: Massimo (${maxTemp}°C) per 3 ore`}">
+            ${isBoostActive ? `🚀 ${boostRemaining || '3h'}` : '🚀 Boost'}
           </button>
           ${room.manual_override ? `
             <button class="preset-pill" style="color: #ff5252; padding: 5px 8px; font-size: 0.72rem;" data-action="clear-override" data-room="${room.room_id}" title="Ripristina orario">✕</button>
@@ -1360,10 +1610,26 @@ class ZonedThermostatPanel extends HTMLElement {
   _renderRoomItem(room) {
     const currTemp = room.current_temp !== null && room.current_temp !== undefined ? `${room.current_temp}°C` : "--";
     const targetTemp = `${room.target_temp}°C`;
+    const maxTemp = room.max_temp !== undefined ? room.max_temp : 28.0;
+
+    const isBoostActive = Boolean(
+      room.manual_override && (
+        room.manual_override.preset_name === 'boost' ||
+        (room.manual_override.mode === 'duration' && Math.abs(room.target_temp - maxTemp) < 0.1)
+      )
+    );
+    let boostRemaining = "";
+    if (isBoostActive && room.manual_override && room.manual_override.expires_at_timestamp) {
+      const remMin = Math.max(1, Math.round((room.manual_override.expires_at_timestamp - (Date.now() / 1000)) / 60));
+      boostRemaining = ` (${remMin}m)`;
+    }
 
     let badgeClass = "badge-idle";
     let badgeText = "A RIPOSO";
-    if (room.state === "heating") {
+    if (isBoostActive) {
+      badgeClass = "badge-boost";
+      badgeText = `🚀 BOOST${boostRemaining}`;
+    } else if (room.state === "heating") {
       badgeClass = "badge-heating";
       badgeText = "🔥 RISCALDAMENTO";
     } else if (room.state === "target_reached") {
@@ -1382,8 +1648,8 @@ class ZonedThermostatPanel extends HTMLElement {
     const comfortVal = eff.comfort !== undefined ? eff.comfort : 21.0;
     const ecoVal = eff.eco !== undefined ? eff.eco : 18.0;
 
-    const isComfortActive = Math.abs(room.target_temp - comfortVal) < 0.1;
-    const isEcoActive = Math.abs(room.target_temp - ecoVal) < 0.1;
+    const isComfortActive = !isBoostActive && Math.abs(room.target_temp - comfortVal) < 0.1;
+    const isEcoActive = !isBoostActive && Math.abs(room.target_temp - ecoVal) < 0.1;
 
     return `
       <div class="room-item">
@@ -1426,6 +1692,13 @@ class ZonedThermostatPanel extends HTMLElement {
                   data-preset="eco"
                   title="Imposta modalità Eco (${ecoVal}°C)">
             Eco (${ecoVal}°)
+          </button>
+          <button class="preset-pill boost-pill ${isBoostActive ? 'active-boost' : ''}"
+                  data-action="boost-room"
+                  data-room="${room.room_id}"
+                  data-active="${isBoostActive ? 'true' : 'false'}"
+                  title="${isBoostActive ? `Boost attivo a ${maxTemp}°C (scade tra ${boostRemaining || '3h'}). Clicca per disattivare` : `Boost: Porta la stanza a ${maxTemp}°C per 3 ore`}">
+            🚀 Boost ${isBoostActive ? (boostRemaining || 'Attivo') : '3h'}
           </button>
 
           ${room.manual_override ? `
@@ -1692,6 +1965,13 @@ class ZonedThermostatPanel extends HTMLElement {
           const currC = btn.dataset.comfort || "21";
           const currE = btn.dataset.eco || "18";
           this._openRoomPresetsDialog(roomId, roomName, currC, currE);
+        } else if (action === "boost-room") {
+          const isBoost = btn.dataset.active === "true";
+          if (isBoost) {
+            await this._clearRoomOverride(roomId);
+          } else {
+            await this._boostRoom(roomId, 180);
+          }
         }
       };
     });

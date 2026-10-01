@@ -75,14 +75,18 @@ async def ws_get_overview(
 
 
 @websocket_api.websocket_command(
-    {
-        vol.Required("type"): "zoned_thermostat/set_room_override",
-        vol.Optional("entry_id"): str,
-        vol.Required("room_id"): str,
-        vol.Required("target"): vol.Coerce(float),
-        vol.Optional("mode", default="until_next_change"): str,
-        vol.Optional("duration_minutes"): vol.Coerce(int),
-    }
+    vol.Schema(
+        {
+            vol.Required("type"): "zoned_thermostat/set_room_override",
+            vol.Optional("entry_id"): str,
+            vol.Required("room_id"): str,
+            vol.Required("target"): vol.Coerce(float),
+            vol.Optional("mode", default="until_next_change"): str,
+            vol.Optional("duration_minutes"): vol.Coerce(int),
+            vol.Optional("preset_name"): vol.Any(str, None),
+        },
+        extra=vol.ALLOW_EXTRA,
+    )
 )
 @websocket_api.async_response
 async def ws_set_room_override(
@@ -99,6 +103,36 @@ async def ws_set_room_override(
             target_temp=msg["target"],
             mode=mode,
             duration_minutes=msg.get("duration_minutes"),
+            preset_name=msg.get("preset_name"),
+        )
+        connection.send_result(msg["id"], {"success": True})
+    except Exception as err:
+        connection.send_error(msg["id"], "error", str(err))
+
+
+@websocket_api.websocket_command(
+    vol.Schema(
+        {
+            vol.Required("type"): "zoned_thermostat/boost_room",
+            vol.Optional("entry_id"): str,
+            vol.Required("room_id"): str,
+            vol.Optional("duration_minutes", default=180): vol.Coerce(int),
+        },
+        extra=vol.ALLOW_EXTRA,
+    )
+)
+@websocket_api.async_response
+async def ws_boost_room(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: Dict[str, Any],
+) -> None:
+    """Boost room temperature to its maximum setpoint for a given duration (default 180 min / 3h)."""
+    try:
+        coordinator = _get_coordinator(hass, msg.get("entry_id", ""))
+        await coordinator.async_boost_room(
+            room_id=msg["room_id"],
+            duration_minutes=msg.get("duration_minutes", 180),
         )
         connection.send_result(msg["id"], {"success": True})
     except Exception as err:
@@ -374,15 +408,18 @@ async def ws_set_zone_pump_manual(
 
 
 @websocket_api.websocket_command(
-    {
-        vol.Required("type"): "zoned_thermostat/set_buffer_settings",
-        vol.Optional("entry_id"): str,
-        vol.Optional("sensor_id"): vol.Any(str, None),
-        vol.Required("min_temp"): vol.Coerce(float),
-        vol.Required("hysteresis"): vol.Coerce(float),
-        vol.Optional("overheat_temp", default=DEFAULT_BUFFER_OVERHEAT_TEMP): vol.Coerce(float),
-        vol.Optional("overheat_hysteresis", default=DEFAULT_BUFFER_OVERHEAT_HYSTERESIS): vol.Coerce(float),
-    }
+    vol.Schema(
+        {
+            vol.Required("type"): "zoned_thermostat/set_buffer_settings",
+            vol.Optional("entry_id"): str,
+            vol.Optional("sensor_id"): vol.Any(str, None),
+            vol.Required("min_temp"): vol.Coerce(float),
+            vol.Required("hysteresis"): vol.Coerce(float),
+            vol.Optional("overheat_temp", default=DEFAULT_BUFFER_OVERHEAT_TEMP): vol.Coerce(float),
+            vol.Optional("overheat_hysteresis", default=DEFAULT_BUFFER_OVERHEAT_HYSTERESIS): vol.Coerce(float),
+        },
+        extra=vol.ALLOW_EXTRA,
+    )
 )
 @websocket_api.async_response
 async def ws_set_buffer_settings(
@@ -410,6 +447,7 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
     """Register all websocket endpoints with Home Assistant."""
     websocket_api.async_register_command(hass, ws_get_overview)
     websocket_api.async_register_command(hass, ws_set_room_override)
+    websocket_api.async_register_command(hass, ws_boost_room)
     websocket_api.async_register_command(hass, ws_clear_room_override)
     websocket_api.async_register_command(hass, ws_set_room_hvac_mode)
     websocket_api.async_register_command(hass, ws_set_global_mode)

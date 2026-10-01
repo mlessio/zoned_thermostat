@@ -19,6 +19,7 @@ from custom_components.zoned_thermostat.core.system import HeatingSystem
 from custom_components.zoned_thermostat.core.zone import HeatingZone
 from custom_components.zoned_thermostat.websocket import (
     ws_apply_room_preset,
+    ws_boost_room,
     ws_set_buffer_settings,
     ws_set_room_presets,
     ws_set_zone_pump_manual,
@@ -370,6 +371,69 @@ class TestEnhancedHeatingFeatures(unittest.TestCase):
         self.assertEqual(restored.buffer_overheat_temp, 85.0)
         self.assertEqual(restored.buffer_overheat_hysteresis, 6.0)
         self.assertTrue(restored.is_buffer_overheat)
+
+    def test_boost_room_feature(self):
+        """Verify boost room overrides target to max_temp for 3 hours and auto-expires."""
+        now = 100000.0
+        self.room_cucina.max_temp = 28.0
+        self.room_cucina.schedule.get_current_block = MagicMock(return_value=None)
+
+        # Trigger boost via coordinator
+        asyncio.run(self.coordinator.async_boost_room("cucina", duration_minutes=180))
+
+        # Check that manual override is active
+        self.assertIsNotNone(self.room_cucina.manual_override)
+        self.assertEqual(self.room_cucina.manual_override.mode, OverrideMode.DURATION)
+        self.assertEqual(self.room_cucina.manual_override.target_temp, 28.0)
+        self.assertEqual(self.room_cucina.manual_override.preset_name, "boost")
+        self.assertEqual(self.room_cucina.manual_override.duration_minutes, 180)
+        self.assertEqual(self.room_cucina.active_preset, "boost")
+
+        # Evaluate target during boost (after 1 hour: 60 minutes)
+        t_during = self.room_cucina.evaluate_target(
+            day="mon",
+            time_str="13:00",
+            global_presets=self.system.presets,
+            global_mode=GlobalMode.HOME,
+            now=self.room_cucina.manual_override.set_timestamp + 3600,
+        )
+        self.assertEqual(t_during, 28.0)
+        self.assertIsNotNone(self.room_cucina.manual_override)
+
+        # Evaluate target after 3 hours and 1 minute (180*60 + 60 s) -> MUST EXPIRE!
+        t_after = self.room_cucina.evaluate_target(
+            day="mon",
+            time_str="15:01",
+            global_presets=self.system.presets,
+            global_mode=GlobalMode.HOME,
+            now=self.room_cucina.manual_override.set_timestamp + (181 * 60),
+        )
+        # Override is cleared and returned to normal schedule (default fallback eco = 18.5)
+        self.assertIsNone(self.room_cucina.manual_override)
+        self.assertEqual(t_after, 18.5)
+        self.assertEqual(self.room_cucina.active_preset, "eco")
+
+    def test_ws_boost_room(self):
+        """Verify ws_boost_room websocket command sets 3-hour boost override."""
+        self.mock_hass.data = {DOMAIN: {"sys1": {"coordinator": self.coordinator}}}
+        conn = MagicMock()
+
+        msg = {
+            "id": 88,
+            "type": "zoned_thermostat/boost_room",
+            "entry_id": "sys1",
+            "room_id": "camera",
+            "duration_minutes": 180,
+        }
+
+        asyncio.run(ws_boost_room(self.mock_hass, conn, msg))
+        conn.send_result.assert_called_once_with(88, {"success": True})
+
+        # Room camera should now have boost override
+        self.assertIsNotNone(self.room_camera.manual_override)
+        self.assertEqual(self.room_camera.manual_override.preset_name, "boost")
+        self.assertEqual(self.room_camera.manual_override.target_temp, self.room_camera.max_temp)
+        self.assertEqual(self.room_camera.manual_override.duration_minutes, 180)
 
 
 if __name__ == "__main__":
