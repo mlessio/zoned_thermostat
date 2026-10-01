@@ -75,18 +75,15 @@ async def ws_get_overview(
 
 
 @websocket_api.websocket_command(
-    vol.Schema(
-        {
-            vol.Required("type"): "zoned_thermostat/set_room_override",
-            vol.Optional("entry_id"): str,
-            vol.Required("room_id"): str,
-            vol.Required("target"): vol.Coerce(float),
-            vol.Optional("mode", default="until_next_change"): str,
-            vol.Optional("duration_minutes"): vol.Coerce(int),
-            vol.Optional("preset_name"): vol.Any(str, None),
-        },
-        extra=vol.ALLOW_EXTRA,
-    )
+    {
+        vol.Required("type"): "zoned_thermostat/set_room_override",
+        vol.Optional("entry_id"): str,
+        vol.Required("room_id"): str,
+        vol.Required("target"): vol.Coerce(float),
+        vol.Optional("mode", default="until_next_change"): str,
+        vol.Optional("duration_minutes"): vol.Coerce(int),
+        vol.Optional("preset_name"): vol.Any(str, None),
+    }
 )
 @websocket_api.async_response
 async def ws_set_room_override(
@@ -111,15 +108,12 @@ async def ws_set_room_override(
 
 
 @websocket_api.websocket_command(
-    vol.Schema(
-        {
-            vol.Required("type"): "zoned_thermostat/boost_room",
-            vol.Optional("entry_id"): str,
-            vol.Required("room_id"): str,
-            vol.Optional("duration_minutes", default=180): vol.Coerce(int),
-        },
-        extra=vol.ALLOW_EXTRA,
-    )
+    {
+        vol.Required("type"): "zoned_thermostat/boost_room",
+        vol.Optional("entry_id"): str,
+        vol.Required("room_id"): str,
+        vol.Optional("duration_minutes", default=180): vol.Coerce(int),
+    }
 )
 @websocket_api.async_response
 async def ws_boost_room(
@@ -408,18 +402,15 @@ async def ws_set_zone_pump_manual(
 
 
 @websocket_api.websocket_command(
-    vol.Schema(
-        {
-            vol.Required("type"): "zoned_thermostat/set_buffer_settings",
-            vol.Optional("entry_id"): str,
-            vol.Optional("sensor_id"): vol.Any(str, None),
-            vol.Required("min_temp"): vol.Coerce(float),
-            vol.Required("hysteresis"): vol.Coerce(float),
-            vol.Optional("overheat_temp", default=DEFAULT_BUFFER_OVERHEAT_TEMP): vol.Coerce(float),
-            vol.Optional("overheat_hysteresis", default=DEFAULT_BUFFER_OVERHEAT_HYSTERESIS): vol.Coerce(float),
-        },
-        extra=vol.ALLOW_EXTRA,
-    )
+    {
+        vol.Required("type"): "zoned_thermostat/set_buffer_settings",
+        vol.Optional("entry_id"): str,
+        vol.Optional("sensor_id"): vol.Any(str, None),
+        vol.Required("min_temp"): vol.Coerce(float),
+        vol.Required("hysteresis"): vol.Coerce(float),
+        vol.Optional("overheat_temp", default=DEFAULT_BUFFER_OVERHEAT_TEMP): vol.Coerce(float),
+        vol.Optional("overheat_hysteresis", default=DEFAULT_BUFFER_OVERHEAT_HYSTERESIS): vol.Coerce(float),
+    }
 )
 @websocket_api.async_response
 async def ws_set_buffer_settings(
